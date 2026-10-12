@@ -1,0 +1,10 @@
+<resources>
+  <style name="Theme.WindyCast" parent="android:style/Theme.Material.NoActionBar">
+    <item name="android:fontFamily">sans</item>
+    <item name="android:colorAccent">#42E2C5</item>
+    <item name="android:statusBarColor">#090D19</item>
+    <item name="android:navigationBarColor">#090D19</item>
+    <item name="android:windowLightStatusBar">false</item>
+    <item name="android:windowBackground">#090D19</item>
+  </style>
+</resources>

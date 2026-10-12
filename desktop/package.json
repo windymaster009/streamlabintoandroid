@@ -1,0 +1,27 @@
+{
+  "name": "windycast-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Free local Android game mirroring receiver",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "dist:win": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "electron": "38.2.2",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "com.windycast.desktop",
+    "productName": "WindyCast",
+    "asar": true,
+    "files": ["main.cjs", "preload.cjs", "index.html", "renderer.js", "audio-worklet.js", "styles.css", "package.json"],
+    "directories": {"output": "dist"},
+    "win": {"target": ["portable"], "artifactName": "WindyCast-Windows-${version}.exe"}
+  }
+}

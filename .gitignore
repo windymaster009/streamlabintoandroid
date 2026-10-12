@@ -1,0 +1,14 @@
+# Android
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+.cxx/
+captures/
+# Desktop
+desktop/node_modules/
+desktop/dist/
+npm-debug.log*
+.DS_Store
+Thumbs.db

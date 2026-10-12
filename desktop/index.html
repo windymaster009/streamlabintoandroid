@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:47839; style-src 'self'; script-src 'self'; worker-src 'self';">
+<title>WindyCast — Mirror your game</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand"><span class="logo">◈</span><span>Windy<span class="brand-accent">Cast</span></span><span class="beta">BETA</span></div>
+    <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">Waiting for Android</span></div>
+  </header>
+  <main class="layout">
+    <section class="viewer-panel">
+      <div class="panel-heading"><div><h1>Live mirror</h1><p>Low-latency gameplay preview for OBS and Streamlabs</p></div><button id="fullBtn" class="ghost">⛶ Fullscreen</button></div>
+      <div id="screen" class="screen">
+        <canvas id="videoCanvas"></canvas>
+        <div id="empty" class="placeholder">
+          <div class="phone-icon">▯</div>
+          <h2>Ready to cast</h2>
+          <p>Scan the QR code with WindyCast on Android, then allow screen sharing.</p>
+          <span class="pill">1080p • 60 FPS target</span>
+        </div>
+      </div>
+      <div class="metrics">
+        <span><span class="metric-label">FPS</span> <strong id="fps">—</strong></span>
+        <span><span class="metric-label">Video</span> <strong id="resolution">—</strong></span>
+        <span><span class="metric-label">Audio</span> <strong id="audioStatus">Waiting</strong></span>
+        <span class="hint">Capture this window in OBS / Streamlabs</span>
+      </div>
+    </section>
+    <aside class="pair-panel">
+      <h2>Connect your phone</h2>
+      <p class="muted">Your devices must be on the same local network.</p>
+      <div class="qr-frame"><img id="qr" alt="Pairing QR code"><div id="qrMissing" class="qr-missing" hidden>No local IPv4 network found</div></div>
+      <label for="interface">Windows network interface</label>
+      <select id="interface"></select>
+      <div class="instruction"><b>1</b><span>Open WindyCast on Android</span></div>
+      <div class="instruction"><b>2</b><span>Tap <strong>Scan PC QR</strong></span></div>
+      <div class="instruction"><b>3</b><span>Tap <strong>Start mirroring</strong> and approve capture</span></div>
+      <button class="primary" id="rotateBtn">↻ Generate new pairing QR</button>
+      <p class="small-note">Local network only. Pairing codes are temporary; keep this QR private.</p>
+    </aside>
+  </main>
+  <footer>Free & open source • No account • No watermark <span id="notice"></span></footer>
+</div>
+<script src="renderer.js"></script>
+</body>
+</html>
