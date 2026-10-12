@@ -68,6 +68,9 @@ class CastService : Service() {
     @Volatile private var streaming = false
     @Volatile private var activeWidth = 0
     @Volatile private var activeHeight = 0
+    // Android 14+ app-only captures can have a different orientation from the
+    // physical display; captured content dimensions take priority when known.
+    @Volatile private var capturedContentSize: Pair<Int, Int>? = null
     @Volatile private var reconfiguring = false
     private var presetChoice = 0
     private var captureDensityDpi = 0
@@ -99,7 +102,10 @@ class CastService : Service() {
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() { stopSelf() }
         override fun onCapturedContentResize(width: Int, height: Int) {
-            scheduleResize(width, height)
+            if (width > 0 && height > 0) {
+                capturedContentSize = width to height
+                scheduleResize(width, height)
+            }
         }
     }
 
@@ -285,8 +291,13 @@ class CastService : Service() {
 
     private fun scheduleDisplayCheck() {
         if (!streaming) return
-        val metrics = screenMetrics()
-        scheduleResize(metrics.widthPixels, metrics.heightPixels)
+        val captured = capturedContentSize
+        if (captured != null) {
+            scheduleResize(captured.first, captured.second)
+        } else {
+            val metrics = screenMetrics()
+            scheduleResize(metrics.widthPixels, metrics.heightPixels)
+        }
     }
 
     private fun scheduleResize(sourceWidth: Int, sourceHeight: Int) {
