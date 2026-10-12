@@ -12,6 +12,8 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.view.Display
+import java.util.concurrent.Executors
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -64,6 +66,30 @@ class CastService : Service() {
     private var videoThread: Thread? = null
     private var audioThread: Thread? = null
     @Volatile private var streaming = false
+    @Volatile private var activeWidth = 0
+    @Volatile private var activeHeight = 0
+    @Volatile private var reconfiguring = false
+    private var presetChoice = 0
+    private var captureDensityDpi = 0
+    private val rotationExecutor = Executors.newSingleThreadExecutor()
+    private val displayManager by lazy { getSystemService(Context.DISPLAY_SERVICE) as DisplayManager }
+    private var rotationPollActive = false
+    private val rotationPoll = object : Runnable {
+        override fun run() {
+            if (!rotationPollActive || !streaming) return
+            scheduleDisplayCheck()
+            handler.postDelayed(this, 900L)
+        }
+    }
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY) {
+                handler.postDelayed({ scheduleDisplayCheck() }, 300L)
+            }
+        }
+    }
     @Volatile private var waitingForVideoKeyframe = false
     private var lastKeyframeRequestMs = 0L
     private var videoEncodedThisSecond = 0
@@ -72,6 +98,9 @@ class CastService : Service() {
     private var statsClockMs = android.os.SystemClock.elapsedRealtime()
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() { stopSelf() }
+        override fun onCapturedContentResize(width: Int, height: Int) {
+            scheduleResize(width, height)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -123,7 +152,7 @@ class CastService : Service() {
         val hasAudioPermission = ContextCompat.checkSelfPermission(
             this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val withAudio = intent.getBooleanExtra(EXTRA_AUDIO, false) && hasAudioPermission
-        val preset = intent.getIntExtra(EXTRA_PROFILE, 0).coerceIn(0, 2)
+        val preset = intent.getIntExtra(EXTRA_PROFILE, 0).coerceIn(0, 3)
         val request = Request.Builder()
             .url("ws://" + address + ":" + port + "/stream?token=" + token)
             .build()
@@ -147,6 +176,78 @@ class CastService : Service() {
         return START_NOT_STICKY
     }
 
+    private data class EncoderChoice(
+        val codec: MediaCodec,
+        val surface: Surface,
+        val width: Int,
+        val height: Int,
+        val fps: Int,
+        val bitrate: Int
+    )
+
+    @Suppress("DEPRECATION")
+    private fun screenMetrics(): DisplayMetrics {
+        val result = DisplayMetrics()
+        (getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+            .defaultDisplay.getRealMetrics(result)
+        return result
+    }
+
+    /**
+     * The Ultra preset is *up to* native 4K; it does not upscale 1080p.
+     * Encoder configuration failures fall back through smaller capture modes.
+     */
+    private fun createVideoEncoder(sourceWidth: Int, sourceHeight: Int): EncoderChoice {
+        val targetEdge = when (presetChoice) {
+            1 -> 1280
+            3 -> 3840
+            else -> 1920
+        }
+        val targetFps = if (presetChoice == 1 || presetChoice == 3) 30 else 60
+        var failure: Exception? = null
+        for (longEdge in listOf(targetEdge, 2560, 1920, 1280, 960).filter { it <= targetEdge }.distinct()) {
+            val scale = minOf(1f, longEdge.toFloat() / max(sourceWidth, sourceHeight).coerceAtLeast(1))
+            val width = ((sourceWidth * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
+            val height = ((sourceHeight * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
+            for (fps in listOf(targetFps, 30).distinct()) {
+                val bitrate = when {
+                    longEdge > 2560 -> 12_000_000
+                    longEdge > 1920 -> 8_000_000
+                    longEdge > 1280 -> if (presetChoice == 2) 8_000_000 else 5_000_000
+                    else -> 2_500_000
+                }
+                var candidate: MediaCodec? = null
+                try {
+                    candidate = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                        setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                            android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                        setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                        setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    }
+                    candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    val surface = candidate.createInputSurface()
+                    try { candidate.start() }
+                    catch (err: Exception) { surface.release(); throw err }
+                    return EncoderChoice(candidate, surface, width, height, fps, bitrate)
+                } catch (err: Exception) {
+                    failure = err
+                    try { candidate?.release() } catch (_: Exception) {}
+                }
+            }
+        }
+        throw IllegalStateException("No available H.264 encoder: " + failure?.message)
+    }
+
+    private fun announceVideo(choice: EncoderChoice) {
+        socket?.send(JSONObject().put("type", "start")
+            .put("width", choice.width).put("height", choice.height)
+            .put("fps", choice.fps).put("bitrate", choice.bitrate)
+            .put("orientation", if (choice.width > choice.height) "landscape" else "portrait")
+            .toString())
+    }
+
     @Suppress("DEPRECATION")
     private fun beginCapture(resultCode: Int, consent: Intent, withAudio: Boolean, preset: Int) {
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -154,47 +255,83 @@ class CastService : Service() {
             ?: throw IllegalStateException("Screen sharing permission was not granted")
         projection = mediaProjection
         mediaProjection.registerCallback(projectionCallback, handler)
-        val metrics = DisplayMetrics()
-        (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
-        val longest = max(metrics.widthPixels, metrics.heightPixels).coerceAtLeast(1)
-        val maxLongEdge = if (preset == 1) 1280 else 1920
-        val scale = minOf(1f, maxLongEdge.toFloat() / longest)
-        val width = ((metrics.widthPixels * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
-        val height = ((metrics.heightPixels * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
-        val fps = if (preset == 1) 30 else 60
-        // H.264 on local Wi-Fi: avoid flooding OkHttp / WebCodesc with 12-20 Mbps.
-        val bitrate = when (preset) { 1 -> 2_500_000; 2 -> 8_000_000; else -> 5_000_000 }
-
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            // Frequent independently decodable frames shorten glitch recovery.
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        }
-        val videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        encoder = videoEncoder
-        videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        inputSurface = videoEncoder.createInputSurface()
-        videoEncoder.start()
+        presetChoice = preset
+        val metrics = screenMetrics()
+        captureDensityDpi = metrics.densityDpi
+        val choice = createVideoEncoder(metrics.widthPixels, metrics.heightPixels)
+        encoder = choice.codec
+        inputSurface = choice.surface
+        activeWidth = choice.width
+        activeHeight = choice.height
         streaming = true
         waitingForVideoKeyframe = false
         videoEncodedThisSecond = 0
         videoSentThisSecond = 0
         videoDroppedThisSecond = 0
         statsClockMs = android.os.SystemClock.elapsedRealtime()
-        socket?.send(JSONObject()
-            .put("type", "start").put("width", width).put("height", height)
-            .put("fps", fps).put("bitrate", bitrate).toString())
+        announceVideo(choice)
         display = mediaProjection.createVirtualDisplay(
-            "WindyCast", width, height, metrics.densityDpi,
+            "WindyCast", choice.width, choice.height, captureDensityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            inputSurface, null, handler
+            choice.surface, null, handler
         )
-        videoThread = Thread({ drainVideo(videoEncoder) }, "WindyCast-video").apply { start() }
+        videoThread = Thread({ drainVideo(choice.codec) }, "WindyCast-video").apply { start() }
+        displayManager.registerDisplayListener(displayListener, handler)
+        rotationPollActive = true
+        handler.postDelayed(rotationPoll, 900L)
         if (withAudio) startAudio(mediaProjection)
         else socket?.send(JSONObject().put("type", "audio-disabled").toString())
+    }
+
+    private fun scheduleDisplayCheck() {
+        if (!streaming) return
+        val metrics = screenMetrics()
+        scheduleResize(metrics.widthPixels, metrics.heightPixels)
+    }
+
+    private fun scheduleResize(sourceWidth: Int, sourceHeight: Int) {
+        if (!streaming || sourceWidth < 100 || sourceHeight < 100 || reconfiguring) return
+        if ((activeWidth > activeHeight) == (sourceWidth > sourceHeight)) return
+        reconfiguring = true
+        rotationExecutor.execute {
+            try { resizeEncoder(sourceWidth, sourceHeight) }
+            catch (error: Exception) {
+                socket?.send(JSONObject().put("type", "error")
+                    .put("message", "Rotation failed: " + error.message).toString())
+                stopSelf()
+            } finally { reconfiguring = false }
+        }
+    }
+
+    private fun resizeEncoder(sourceWidth: Int, sourceHeight: Int) {
+        if (!streaming || display == null) return
+        // Android 14+ permits just one createVirtualDisplay per consent token.
+        // Reuse its surface and resize in-place without losing Wi-Fi or audio.
+        val oldCodec = encoder
+        val oldSurface = inputSurface
+        encoder = null
+        try { display?.setSurface(null) } catch (_: Exception) {}
+        try { videoThread?.join(700L) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        try { oldCodec?.stop() } catch (_: Exception) {}
+        try { oldCodec?.release() } catch (_: Exception) {}
+        try { oldSurface?.release() } catch (_: Exception) {}
+        if (!streaming) return
+        val choice = createVideoEncoder(sourceWidth, sourceHeight)
+        inputSurface = choice.surface
+        encoder = choice.codec
+        activeWidth = choice.width
+        activeHeight = choice.height
+        waitingForVideoKeyframe = false
+        videoEncodedThisSecond = 0
+        videoSentThisSecond = 0
+        videoDroppedThisSecond = 0
+        statsClockMs = android.os.SystemClock.elapsedRealtime()
+        announceVideo(choice)
+        display?.resize(choice.width, choice.height, captureDensityDpi)
+        display?.setSurface(choice.surface)
+        videoThread = Thread({ drainVideo(choice.codec) }, "WindyCast-video").apply { start() }
     }
 
     private fun requestKeyframe() {
@@ -270,7 +407,7 @@ class CastService : Service() {
     private fun drainVideo(codec: MediaCodec) {
         val info = MediaCodec.BufferInfo()
         try {
-            while (streaming) {
+            while (streaming && encoder === codec) {
                 when (val index = codec.dequeueOutputBuffer(info, 10_000L)) {
                     MediaCodec.INFO_TRY_AGAIN_LATER -> continue
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -354,6 +491,10 @@ class CastService : Service() {
 
     override fun onDestroy() {
         streaming = false
+        rotationPollActive = false
+        handler.removeCallbacks(rotationPoll)
+        try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) {}
+        rotationExecutor.shutdownNow()
         try { recorder?.stop() } catch (_: Exception) {}
         try { recorder?.release() } catch (_: Exception) {}
         recorder = null

@@ -42,6 +42,13 @@ jobs:
       - name: Install Windows receiver dependencies
         working-directory: desktop
         run: npm install --no-audit --no-fund
+      - name: Validate desktop JavaScript syntax
+        working-directory: desktop
+        run: |
+          node --check main.cjs
+          node --check preload.cjs
+          node --check renderer.js
+          node --check audio-worklet.js
       - name: Build standalone EXE
         working-directory: desktop
         env:

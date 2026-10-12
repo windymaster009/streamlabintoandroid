@@ -163,10 +163,18 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(30), 0, dp(10))
         })
         quality = Spinner(this)
-        val options = arrayOf("Gaming — 1080p / 60 FPS (5 Mbps)", "Balanced — 720p / 30 FPS (2.5 Mbps)", "High Quality — 1080p / 60 FPS (8 Mbps)")
+        val options = arrayOf(
+            "Gaming — 1080p / 60 FPS (5 Mbps)",
+            "Balanced — 720p / 30 FPS (2.5 Mbps)",
+            "High Quality — 1080p / 60 FPS (8 Mbps)",
+            "Ultra — Native up to 4K / 30 FPS (12 Mbps)"
+        )
         quality.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, options)
         quality.setBackgroundColor(Color.parseColor("#1D2C43"))
         root.addView(quality, LinearLayout.LayoutParams(-1, dp(55)))
+        root.addView(label("Auto-rotate follows the game. Ultra never upscales a lower-resolution phone screen.", 12f, "#8CA2BF").apply {
+            setPadding(0, dp(10), 0, 0)
+        })
         audioCheck = CheckBox(this).apply {
             text = "Include game audio (supported games)"
             setTextColor(Color.parseColor("#D8E6F5"))

@@ -230,6 +230,12 @@ function openViewer() {
           document.getElementById('dropCount').textContent = String(msg.dropped ?? 0);
         }
         if (msg.type === 'start') {
+          // Rotation restarts the Android encoder, not the audio or connection.
+          // Show the new capture dimensions immediately while the first IDR
+          // frame reaches WebCodecs.
+          if (Number.isFinite(msg.width) && Number.isFinite(msg.height)) {
+            document.getElementById('resolution').textContent = msg.width + '×' + msg.height;
+          }
           if (decoder) { decoder.close(); decoder = null; }
           codecConfig = null;
           codecName = 'avc1.42E02A';

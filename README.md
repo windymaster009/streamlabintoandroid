@@ -2,7 +2,7 @@
 
 **Free, self-hosted Android-to-Windows game mirroring** with QR pairing, a native Android sender (APK), a standalone Electron Windows receiver (EXE), and a single GitHub repository.
 
-> **Current status: v0.3 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
+> **Current status: v0.4 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
 
 ## What it does
 
@@ -10,9 +10,10 @@
 - Capture Android screen via Android MediaProjection, H.264 surface encoder (MediaCodec), and a local-network WebSocket.
 - Decode H.264 in the Windows Electron app with WebCodecs and display in a resizable window.
 - Capture Android game playback audio where the game's Android audio-capture policy permits it (Android 10+), streaming PCM to the Windows output.
-- Presets: **1080p / up to 60 FPS (5 Mbps)**, **720p / up to 30 FPS (2.5 Mbps)**, and **1080p / up to 60 FPS (8 Mbps)**.
+- Presets: **1080p / up to 60 FPS (5 Mbps)**, **720p / up to 30 FPS (2.5 Mbps)**, **1080p / up to 60 FPS (8 Mbps)**, and **Ultra native up to 4K / up to 30 FPS (12 Mbps)**. Ultra is limited by the real phone display resolution and falls back if the H.264 encoder rejects the requested mode.
 - v0.2 has congestion-aware H.264 keyframe recovery instead of dropping individual dependent frames, plus a one-second I-frame interval.
 - Built-in diagnostics: **Android encoded FPS**, **sent FPS**, **incoming FPS**, **displayed FPS**, **queue KB**, **dropped frames/s**, and **resync count**.
+- **Automatic portrait ↔ landscape changes** resize Android's existing MediaProjection virtual display and recreate the H.264 surface encoder without requiring a new QR connection. Game View adjusts its own window aspect ratio when the stream switches orientation.
 - **Open Game View** creates a dedicated, resizable, opaque Windows capture window with only the phone video and no QR/settings. Capture the **WindyCast Game View - Streamlabs Capture** window in OBS Studio or Streamlabs Desktop; no official integration is required.
 - The dashboard decodes no video while Game View is open, helping prevent double video-decode load; the dashboard continues to play the phone's captured game audio.
 - Both builds produced by GitHub Actions from this same repository.
@@ -22,7 +23,7 @@
 1. Open **[GitHub Actions](../../actions/workflows/build.yml)**.
 2. Select a successful **Build Android APK and Windows EXE** workflow run.
 3. Under **Artifacts**, download **WindyCast-Android-APK** and **WindyCast-Windows-EXE**.
-4. Unzip each artifact. Install \`app-debug.apk\` on Android and run \`WindyCast-Windows-0.1.0.exe\` on Windows. The Windows build is a portable executable; it does not require a separate installer.
+4. Unzip each artifact. Install `app-debug.apk` on Android and run `WindyCast-Windows-0.4.0.exe` on Windows. The Windows build is a portable executable; it does not require a separate installer.
 
 These are unsigned development builds. Windows SmartScreen may warn about a downloaded unsigned EXE; inspect and trust the source before proceeding. To generate a signed production app, configure signing separately.
 
@@ -106,3 +107,10 @@ The live preview shows separate performance metrics:
 **Open Game View** on the main Windows dashboard creates a separate, normal Windows application window entitled `WindyCast Game View - Streamlabs Capture`. It contains only a black background and the Android video, ideal for Window Capture and resizing. The window is **not** a proprietary Streamlabs plugin, and cannot force Streamlabs to enumerate it if Windows or Streamlabs filters it. Capture Method changes and Display Capture are supported fallback options. Keep this window visible (not minimized) during capture.
 
 When the dedicated Game View is open, the dashboard pauses H.264 decoding, while continuing to receive statistics and play phone audio; the Game View itself plays **no audio** to prevent duplicate sounds. If you use Streamlabs, ensure Desktop Audio is configured correctly. Since this is still an early build, capture behavior must be verified on a real Windows system.
+
+## v0.4 auto-rotate + Ultra capture mode
+
+- **Rotate the phone or launch a landscape game after connecting:** Android's virtual display is resized in place and its H.264 encoder restarted in the same MediaProjection session. The Windows decoder resets automatically and Game View changes between a wide landscape and tall portrait capture window. **No QR rescan needed.** During orientation changes there may be a short black frame or freeze while video recovers; game audio should continue.
+- **Ultra** requests native pixels up to a 3840px long edge at 30 FPS/12 Mbps, with fallback to smaller supported encoder configurations. A 1080p/2400p phone doesn't become true 4K just by selecting Ultra. Quality depends on actual hardware, game, Wi-Fi, and encoder support.
+- **Queue KB** measures Android's pending WebSocket bytes, *not bitrate*. Values around 5–10 KB are low and generally good. Use separate Android/Sent/Incoming/Displayed FPS diagnostics to understand lag.
+- This feature is experimental; test both rotating before launch and rotating while already mirroring, preferably with your actual game. If black bars persist, include both phone and desktop screenshots and the current Video resolution from the dashboard.

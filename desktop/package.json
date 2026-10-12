@@ -1,6 +1,6 @@
 {
   "name": "windycast-desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Free local Android game mirroring receiver",
   "main": "main.cjs",

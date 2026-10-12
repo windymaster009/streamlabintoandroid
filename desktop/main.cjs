@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
@@ -12,6 +12,7 @@ let gameView = null;
 let token = crypto.randomBytes(24).toString('hex');
 let sender = null;
 let codecHeader = null;
+let latestVideoStart = null;
 const viewers = new Set();
 let server, wss;
 
@@ -48,6 +49,7 @@ function stopSender() {
     current.terminate();
   }
   codecHeader = null;
+  latestVideoStart = null;
   sendStatus();
 }
 function buildServer() {
@@ -79,6 +81,7 @@ function buildServer() {
             }
           } catch (_) {}
         });
+        if (latestVideoStart) ws.send(latestVideoStart);
         if (codecHeader) ws.send(codecHeader);
         ws.on('close', () => { viewers.delete(ws); sendStatus(); });
         if (sender?.readyState === WebSocket.OPEN) sender.send(JSON.stringify({ type: 'keyframe' }));
@@ -88,11 +91,23 @@ function buildServer() {
       if (sender) stopSender();
       sender = ws;
       codecHeader = null;
+      latestVideoStart = null;
       ws.on('message', (payload, binary) => {
         if (sender !== ws) return;
         if (!binary) {
+          const message = payload.toString();
+          try {
+            const command = JSON.parse(message);
+            if (command.type === 'start' &&
+                Number.isFinite(command.width) && Number.isFinite(command.height) &&
+                command.width > 0 && command.height > 0) {
+              latestVideoStart = message;
+              codecHeader = null;
+              resizeGameView(command.width, command.height);
+            }
+          } catch (_) {}
           for (const viewer of viewers) {
-            if (viewer.readyState === WebSocket.OPEN) viewer.send(payload.toString());
+            if (viewer.readyState === WebSocket.OPEN) viewer.send(message);
           }
           return;
         }
@@ -108,6 +123,7 @@ function buildServer() {
         if (sender === ws) {
           sender = null;
           codecHeader = null;
+          latestVideoStart = null;
           for (const viewer of viewers) if (viewer.readyState === WebSocket.OPEN) viewer.send(JSON.stringify({ type: 'stopped' }));
           sendStatus();
         }
@@ -130,6 +146,28 @@ async function receiverInfo() {
   }));
   return { port: PORT, addresses: items, connected: sender?.readyState === WebSocket.OPEN };
 }
+// Keep a 16:9 landscape game wide and a portrait screen tall. This also
+// maintains the correct aspect ratio in Streamlabs' Window Capture source.
+function resizeGameView(width, height) {
+  if (!gameView || gameView.isDestroyed()) return;
+  if (!(width > 0 && height > 0)) return;
+  const ratio = width / height;
+  const work = screen.getDisplayMatching(gameView.getBounds()).workArea;
+  const maxWidth = Math.max(320, work.width - 100);
+  const maxHeight = Math.max(240, work.height - 120);
+  let w = width > height ? Math.min(1280, maxWidth) : Math.min(520, maxWidth);
+  let h = Math.round(w / ratio);
+  if (h > maxHeight) {
+    h = maxHeight;
+    w = Math.round(h * ratio);
+  }
+  w = Math.max(240, Math.round(w));
+  h = Math.max(180, Math.round(h));
+  gameView.setAspectRatio(0);
+  gameView.setContentSize(w, h);
+  gameView.setAspectRatio(ratio);
+}
+
 function openGameView() {
   if (gameView && !gameView.isDestroyed()) {
     if (gameView.isMinimized()) gameView.restore();
@@ -161,6 +199,12 @@ function openGameView() {
   view.removeMenu();
   view.webContents.on('page-title-updated', (event) => event.preventDefault());
   view.loadFile(path.join(__dirname, 'index.html'), { query: { mode: 'capture' } });
+  if (latestVideoStart) {
+    try {
+      const dimensions = JSON.parse(latestVideoStart);
+      resizeGameView(dimensions.width, dimensions.height);
+    } catch (_) {}
+  }
   if (win && !win.isDestroyed()) win.webContents.send('receiver:game-view-status', true);
   view.on('closed', () => {
     if (gameView === view) gameView = null;
