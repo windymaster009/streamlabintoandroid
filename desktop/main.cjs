@@ -3,6 +3,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const WebSocket = require('ws');
 const QRCode = require('qrcode');
 
@@ -15,6 +16,22 @@ let codecHeader = null;
 let latestVideoStart = null;
 const viewers = new Set();
 let server, wss;
+let cropPercent = 3;
+let cropSettingsPath = null;
+
+function setCropPercent(percent) {
+  const value = Math.round(Number(percent));
+  if (!Number.isFinite(value) || value < 0 || value > 8) return cropPercent;
+  cropPercent = value;
+  if (cropSettingsPath) {
+    try { fs.writeFileSync(cropSettingsPath, JSON.stringify({ cropPercent }), 'utf8'); }
+    catch (error) { console.warn('Could not save crop preference:', error.message); }
+  }
+  for (const view of [win, gameView]) {
+    if (view && !view.isDestroyed()) view.webContents.send('receiver:crop:changed', cropPercent);
+  }
+  return cropPercent;
+}
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // Keep the receiver and its capture window rendering in the background.
@@ -247,12 +264,23 @@ function openGameView() {
 }
 
 app.whenReady().then(() => {
+  cropSettingsPath = path.join(app.getPath('userData'), 'capture-settings.json');
+  try {
+    const stored = JSON.parse(fs.readFileSync(cropSettingsPath, 'utf8'));
+    const restored = Math.round(Number(stored.cropPercent));
+    if (Number.isFinite(restored) && restored >= 0 && restored <= 8) cropPercent = restored;
+  } catch (_) { /* First run: default to 3% for small sidebars. */ }
   buildServer();
   ipcMain.on('receiver:game-view:fps', (event, fps) => {
     if (gameView && !gameView.isDestroyed() && event.sender === gameView.webContents &&
         Number.isInteger(fps) && fps >= 0 && fps <= 240 && win && !win.isDestroyed()) {
       win.webContents.send('receiver:game-view:fps', fps);
     }
+  });
+  ipcMain.handle('receiver:crop:get', () => cropPercent);
+  ipcMain.handle('receiver:crop:set', (event, percent) => {
+    if (!win || event.sender !== win.webContents) return cropPercent;
+    return setCropPercent(percent);
   });
   ipcMain.handle('receiver:info', receiverInfo);
   ipcMain.handle('receiver:game-view:open', (event) => {

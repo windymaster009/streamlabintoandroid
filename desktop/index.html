@@ -28,6 +28,7 @@
       <div class="metrics">
         <span title="Frames encoded by Android each second"><span class="metric-label">Android FPS</span> <strong id="encodedFps">—</strong></span>
         <span title="Frames sent by Android each second"><span class="metric-label">Sent FPS</span> <strong id="sentFps">—</strong></span>
+        <span title="Actual encoder target chosen by Android; 4K60 may fall back"><span class="metric-label">Encoder mode</span> <strong id="encoderMode">—</strong></span>
         <span title="Video frames received by PC each second"><span class="metric-label">Incoming FPS</span> <strong id="incomingFps">—</strong></span>
         <span title="Video frames shown by the PC each second"><span class="metric-label">Displayed FPS</span> <strong id="fps">—</strong></span>
         <span><span class="metric-label">Video</span> <strong id="resolution">—</strong></span>
@@ -44,6 +45,14 @@
       <div class="qr-frame"><img id="qr" alt="Pairing QR code"><div id="qrMissing" class="qr-missing" hidden>No local IPv4 network found</div></div>
       <label for="interface">Windows network interface</label>
       <select id="interface"></select>
+      <div class="crop-settings">
+        <div class="crop-heading">
+          <label for="cropSlider">Game View · Crop black borders</label>
+          <strong id="cropValue">3%</strong>
+        </div>
+        <input id="cropSlider" type="range" min="0" max="8" step="1" value="3" aria-label="Crop Game View borders (0 to 8 percent)">
+        <p>3% gently zooms the gameplay to hide narrow black edges. Set 0% to keep the full image.</p>
+      </div>
       <div class="instruction"><b>1</b><span>Open WindyCast on Android</span></div>
       <div class="instruction"><b>2</b><span>Tap <strong>Scan PC QR</strong></span></div>
       <div class="instruction"><b>3</b><span>Tap <strong>Start mirroring</strong> and approve capture</span></div>

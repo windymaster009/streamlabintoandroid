@@ -2,7 +2,7 @@
 
 **Free, self-hosted Android-to-Windows game mirroring** with QR pairing, a native Android sender (APK), a standalone Electron Windows receiver (EXE), and a single GitHub repository.
 
-> **Current status: v0.5 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
+> **Current status: v0.6 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
 
 ## What it does
 
@@ -23,7 +23,7 @@
 1. Open **[GitHub Actions](../../actions/workflows/build.yml)**.
 2. Select a successful **Build Android APK and Windows EXE** workflow run.
 3. Under **Artifacts**, download **WindyCast-Android-APK** and **WindyCast-Windows-EXE**.
-4. Unzip each artifact. Install `app-debug.apk` on Android and run `WindyCast-Windows-0.5.0.exe` on Windows. The Windows build is a portable executable; it does not require a separate installer.
+4. Unzip each artifact. Install `app-debug.apk` on Android and run `WindyCast-Windows-0.6.0.exe` on Windows. The Windows build is a portable executable; it does not require a separate installer.
 
 These are unsigned development builds. Windows SmartScreen may warn about a downloaded unsigned EXE; inspect and trust the source before proceeding. To generate a signed production app, configure signing separately.
 
@@ -140,3 +140,18 @@ Use `Open Game View`, select the dedicated `WindyCast Game View - Streamlabs Cap
 ### Security
 
 The local transport still uses plaintext WebSocket. Do not expose port 47839 outside a trusted LAN. Treat pairing QR images as secrets and regenerate them if shared publicly.
+
+## v0.6 — Ultra 60 FPS, crop, Game Mode resilience
+
+- **Ultra 60 FPS (adaptive)** is a sixth Android capture preset. It requests up to native 3840px, 60 FPS, H.264 hardware encoding. The encoder is checked for supported size/rate first. If the phone can't do native 4K60, the app tries smaller supported 60 FPS modes, then falls back to 30 FPS. These are *requested* encode rates; real delivered FPS can be lower.
+- **Ultra 30** remains available unchanged in the preset list; both Ultra presets prefer hardware encoders and use a more conservative bitrate based on *actual* captured pixels, avoiding wasteful 4K bitrate on a lower-resolution phone.
+- **Game View Crop black borders** slider (0–8%; default 3%) in Windows settings. This modest uniform zoom can remove narrow side strips; it doesn't distort shapes, but it does trim a little content at all edges. Use 0% to restore the full captured image, and avoid larger values if on-screen controls are close to the edge. The setting persists on Windows.
+- **Game Mode resilience:** a temporary Android-to-PC network interruption no longer immediately tears down the MediaProjection session. The Android foreground service maintains a partial CPU wake lock and high-performance Wi-Fi lock while active, reconnects with a short backoff, sends current stream dimensions and AVC headers, and asks for a fresh keyframe. This is an attempt to survive network pauses, not a guaranteed workaround for manufacturer Game Booster restrictions.
+- On Android, tap **Game Mode / background settings** to open this application's system page. Select unrestricted battery/background usage where available, and whitelist WindyCast in any phone-specific Game Booster's background-app cleanup settings. Vendor menu labels vary.
+- If Android revokes screen capture, closes WindyCast's process, or deliberately blocks recording while Game Mode runs, no app can silently restore capture permission; reopen WindyCast and grant screen capture again. The app stores a visible status explanation when the MediaProjection callback fires.
+
+### Performance advice
+
+Prefer **Low Latency 720p60** or **Gaming 1080p60** during competitive play. Ultra60 is best for a powerful phone with supported hardware, a stable 5/6 GHz WLAN, and an Ethernet-connected Windows receiver. Set **Game View Crop** to 0% to compare before/after appearance. Test Ultra60 against Ultra30 and watch *Android FPS*, *Sent FPS*, *Incoming FPS*, *Displayed FPS*, and *Encoder mode*, not just the chosen quality label.
+
+Game Mode disconnect behavior is highly phone/ROM-specific and must be validated on physical devices. This project does not defeat Android app-specific protected content or screen-capture restrictions.

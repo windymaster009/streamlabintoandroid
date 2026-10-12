@@ -6,6 +6,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.net.wifi.WifiManager
+import android.os.PowerManager
+import java.util.concurrent.atomic.AtomicBoolean
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -18,6 +21,8 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaCodec
+import android.media.MediaCodecList
+import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -56,8 +61,29 @@ class CastService : Service() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private val client = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build()
-    private var socket: WebSocket? = null
+    private val client = OkHttpClient.Builder()
+        .pingInterval(8, TimeUnit.SECONDS)
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .build()
+    @Volatile private var socket: WebSocket? = null
+    @Volatile private var connectionReady = false
+    @Volatile private var captureReady = false
+    private val captureStarting = AtomicBoolean(false)
+    private var endpointUrl = ""
+    private var reconnectAttempts = 0
+    private var reconnectPending = false
+    @Volatile private var shuttingDown = false
+    @Volatile private var startDescriptor: String? = null
+    @Volatile private var codecHeaderCache: ByteArray? = null
+    private var cpuLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private data class CaptureLaunch(
+        val resultCode: Int,
+        val consent: Intent,
+        val audio: Boolean,
+        val preset: Int
+    )
+    private var captureLaunch: CaptureLaunch? = null
     private var projection: MediaProjection? = null
     @Volatile private var encoder: MediaCodec? = null
     private var display: VirtualDisplay? = null
@@ -100,7 +126,15 @@ class CastService : Service() {
     private var videoDroppedThisSecond = 0
     private var statsClockMs = android.os.SystemClock.elapsedRealtime()
     private val projectionCallback = object : MediaProjection.Callback() {
-        override fun onStop() { stopSelf() }
+        override fun onStop() {
+            if (!shuttingDown) {
+                getSharedPreferences("windycast", MODE_PRIVATE).edit()
+                    .putString("lastStopReason",
+                        "Android or Game Mode ended screen sharing. Open WindyCast and approve sharing again. Check background activity / battery restrictions.")
+                    .apply()
+                stopSelf()
+            }
+        }
         override fun onCapturedContentResize(width: Int, height: Int) {
             if (width > 0 && height > 0) {
                 capturedContentSize = width to height
@@ -118,7 +152,7 @@ class CastService : Service() {
         )
     }
 
-    private fun notification(): Notification {
+    private fun notification(message: String = "Sharing screen with Windows"): Notification {
         val stopIntent = Intent(this, CastService::class.java).apply { action = ACTION_STOP }
         val stop = PendingIntent.getService(this, 1, stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -128,7 +162,7 @@ class CastService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setContentTitle("WindyCast mirroring")
-            .setContentText("Sharing screen with Windows • Tap to manage")
+            .setContentText(message)
             .setContentIntent(open)
             .addAction(android.R.drawable.ic_media_pause, "Stop mirroring", stop)
             .setOngoing(true).build()
@@ -158,28 +192,122 @@ class CastService : Service() {
         val hasAudioPermission = ContextCompat.checkSelfPermission(
             this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val withAudio = intent.getBooleanExtra(EXTRA_AUDIO, false) && hasAudioPermission
-        val preset = intent.getIntExtra(EXTRA_PROFILE, 0).coerceIn(0, 4)
-        val request = Request.Builder()
-            .url("ws://" + address + ":" + port + "/stream?token=" + token)
-            .build()
-        socket = client.newWebSocket(request, object : WebSocketListener() {
+        val preset = intent.getIntExtra(EXTRA_PROFILE, 0).coerceIn(0, 5)
+        captureLaunch = CaptureLaunch(resultCode, consent, withAudio, preset)
+        endpointUrl = "ws://" + address + ":" + port + "/stream?token=" + token
+        getSharedPreferences("windycast", MODE_PRIVATE).edit().remove("lastStopReason").apply()
+        acquireStreamingLocks()
+        openConnection()
+        return START_NOT_STICKY
+    }
+
+    private fun updateConnectionNotification(message: String) {
+        getSystemService(NotificationManager::class.java)
+            .notify(42, notification(message))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireStreamingLocks() {
+        try {
+            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+            cpuLock = power.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK, "WindyCast:ScreenCast").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("WindyCast", "CPU lock unavailable", error)
+        }
+        try {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wifi.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF, "WindyCast:WifiStream").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("WindyCast", "Wi-Fi lock unavailable", error)
+        }
+    }
+
+    private fun scheduleReconnect() {
+        handler.post {
+            if (shuttingDown || reconnectPending || endpointUrl.isBlank()) return@post
+            reconnectPending = true
+            reconnectAttempts++
+            val delayMs = when {
+                reconnectAttempts == 1 -> 500L
+                reconnectAttempts == 2 -> 1000L
+                reconnectAttempts == 3 -> 2000L
+                else -> 4000L
+            }
+            updateConnectionNotification("Game Mode/network interrupted. Reconnecting to PC…")
+            handler.postDelayed({
+                reconnectPending = false
+                if (!shuttingDown && !connectionReady) openConnection()
+            }, delayMs)
+        }
+    }
+
+    private fun openConnection() {
+        if (shuttingDown || endpointUrl.isBlank()) return
+        val request = Request.Builder().url(endpointUrl).build()
+        val ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
+                if (shuttingDown || socket !== ws) {
+                    ws.close(1000, "Connection replaced")
+                    return
+                }
+                connectionReady = true
+                reconnectAttempts = 0
+                updateConnectionNotification("Mirroring active • Tap to manage")
+                if (captureReady) {
+                    // Keep the same MediaProjection and encoder while replacing
+                    // only the WebSocket after a Wi-Fi/Game Mode interruption.
+                    startDescriptor?.let { ws.send(it) }
+                    codecHeaderCache?.let { sendPacket(3, 0, 0L, it) }
+                    lastKeyframeRequestMs = 0L
+                    waitingForVideoKeyframe = false
+                    requestKeyframe()
+                    return
+                }
+                val launch = captureLaunch ?: return
+                if (!captureStarting.compareAndSet(false, true)) return
                 Thread({
-                    try { beginCapture(resultCode, consent, withAudio, preset) }
-                    catch (error: Exception) {
-                        ws.send(JSONObject().put("type", "error")
-                            .put("message", error.message ?: "Capture failed").toString())
+                    try {
+                        beginCapture(launch.resultCode, launch.consent, launch.audio, launch.preset)
+                        captureReady = true
+                        captureLaunch = null
+                    } catch (error: Exception) {
+                        android.util.Log.e("WindyCast", "Cannot start capture", error)
+                        getSharedPreferences("windycast", MODE_PRIVATE).edit()
+                            .putString("lastStopReason",
+                                "Screen capture could not start: " + (error.message ?: "Unknown error"))
+                            .apply()
                         stopSelf()
+                    } finally {
+                        captureStarting.set(false)
                     }
                 }, "WindyCast-start").start()
             }
             override fun onMessage(ws: WebSocket, text: String) {
                 if (text.contains("\"keyframe\"")) requestKeyframe()
             }
-            override fun onFailure(ws: WebSocket, error: Throwable, response: Response?) { stopSelf() }
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) { stopSelf() }
+            override fun onFailure(ws: WebSocket, error: Throwable, response: Response?) {
+                if (socket !== ws || shuttingDown) return
+                android.util.Log.w("WindyCast", "Network disconnected; trying to reconnect", error)
+                socket = null
+                connectionReady = false
+                scheduleReconnect()
+            }
+            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                if (socket !== ws || shuttingDown) return
+                socket = null
+                connectionReady = false
+                scheduleReconnect()
+            }
         })
-        return START_NOT_STICKY
+        socket = ws
     }
 
     private data class EncoderChoice(
@@ -206,56 +334,99 @@ class CastService : Service() {
     private fun createVideoEncoder(sourceWidth: Int, sourceHeight: Int): EncoderChoice {
         val targetEdge = when (presetChoice) {
             1, 4 -> 1280
-            3 -> 3840
+            3, 5 -> 3840
             else -> 1920
         }
-        val targetFps = if (presetChoice == 1 || presetChoice == 3) 30 else 60
+        val preferredFps = when (presetChoice) {
+            1, 3 -> 30
+            else -> 60
+        }
+        // Ultra 60 deliberately prefers smooth 60 FPS at a lower native
+        // resolution over a stuttering 4K30 stream if 4K60 is unsupported.
+        val requestedRates = if (preferredFps == 60) listOf(60, 30) else listOf(30)
+        val edges = listOf(targetEdge, 2560, 1920, 1280, 960)
+            .filter { it <= targetEdge }.distinct()
+        val codecs = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+            .filter { info ->
+                info.isEncoder && info.supportedTypes.any {
+                    it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true)
+                }
+            }.sortedBy { if (it.isHardwareAccelerated) 0 else 1 }
+        // Ultra should NEVER pick a slow software 4K encoder just because
+        // the hardware encoder cannot handle 4K60. Prefer hardware and scale
+        // down until 60 FPS is supported (then fall back to 30 FPS).
+        val candidateCodecs = if (presetChoice == 3 || presetChoice == 5) {
+            codecs.filter { it.isHardwareAccelerated }.ifEmpty { codecs }
+        } else codecs
         var failure: Exception? = null
-        for (longEdge in listOf(targetEdge, 2560, 1920, 1280, 960).filter { it <= targetEdge }.distinct()) {
-            val scale = minOf(1f, longEdge.toFloat() / max(sourceWidth, sourceHeight).coerceAtLeast(1))
-            val width = ((sourceWidth * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
-            val height = ((sourceHeight * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
-            for (fps in listOf(targetFps, 30).distinct()) {
+
+        for (fps in requestedRates) {
+            for (longEdge in edges) {
+                val scale = minOf(1f, longEdge.toFloat() /
+                    max(sourceWidth, sourceHeight).coerceAtLeast(1))
+                // Keep within native screen pixels; no artificial upscaling.
+                val rawWidth = (sourceWidth * scale).roundToInt()
+                val rawHeight = (sourceHeight * scale).roundToInt()
+                // Bitrate is based on the ACTUAL phone pixels, not merely the
+                // Ultra preset's 3840px ceiling (a 2400px phone isn't 4K).
+                val actualLongEdge = max(rawWidth, rawHeight)
                 val bitrate = when {
-                    longEdge > 2560 -> 12_000_000
-                    longEdge > 1920 -> 8_000_000
-                    longEdge > 1280 -> if (presetChoice == 2) 8_000_000 else 5_000_000
+                    actualLongEdge > 2560 -> if (fps == 60) 16_000_000 else 9_000_000
+                    actualLongEdge > 1920 -> if (fps == 60) 11_000_000 else 7_000_000
+                    actualLongEdge > 1280 -> if (presetChoice == 2 || presetChoice == 5)
+                        8_000_000 else 5_000_000
                     presetChoice == 4 -> 3_000_000
                     else -> 2_500_000
                 }
-                var candidate: MediaCodec? = null
-                try {
-                    candidate = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                    val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-                        setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                            android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                        setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                        setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-                        // A priority of 0 requests realtime encoding on encoders
-                        // that support Android's codec priority hint.
-                        setInteger(MediaFormat.KEY_PRIORITY, 0)
+                for (info in candidateCodecs) {
+                    var candidate: MediaCodec? = null
+                    try {
+                        val caps = info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                        if (!caps.colorFormats.contains(
+                                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)) continue
+                        // Respect vendor encoder alignment (often 2, 8 or 16).
+                        val video = caps.videoCapabilities
+                        val wa = video.widthAlignment
+                        val ha = video.heightAlignment
+                        val width = (rawWidth / wa * wa).coerceAtLeast(wa)
+                        val height = (rawHeight / ha * ha).coerceAtLeast(ha)
+                        if (!video.areSizeAndRateSupported(width, height, fps.toDouble())) continue
+                        candidate = MediaCodec.createByCodecName(info.name)
+                        val format = MediaFormat.createVideoFormat(
+                            MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                            setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                            setInteger(MediaFormat.KEY_PRIORITY, 0)
+                        }
+                        candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                        val surface = candidate.createInputSurface()
+                        try { candidate.start() }
+                        catch (error: Exception) { surface.release(); throw error }
+                        return EncoderChoice(candidate, surface, width, height, fps, bitrate)
+                    } catch (error: Exception) {
+                        failure = error
+                        try { candidate?.release() } catch (_: Exception) {}
                     }
-                    candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                    val surface = candidate.createInputSurface()
-                    try { candidate.start() }
-                    catch (err: Exception) { surface.release(); throw err }
-                    return EncoderChoice(candidate, surface, width, height, fps, bitrate)
-                } catch (err: Exception) {
-                    failure = err
-                    try { candidate?.release() } catch (_: Exception) {}
                 }
             }
         }
-        throw IllegalStateException("No available H.264 encoder: " + failure?.message)
+        throw IllegalStateException(
+            "No supported H.264 capture configuration: " + failure?.message)
     }
 
     private fun announceVideo(choice: EncoderChoice) {
-        socket?.send(JSONObject().put("type", "start")
+        val descriptor = JSONObject().put("type", "start")
             .put("width", choice.width).put("height", choice.height)
             .put("fps", choice.fps).put("bitrate", choice.bitrate)
+            .put("hardware", choice.codec.codecInfo.isHardwareAccelerated)
             .put("orientation", if (choice.width > choice.height) "landscape" else "portrait")
-            .toString())
+            .toString()
+        startDescriptor = descriptor
+        codecHeaderCache = null
+        if (connectionReady) socket?.send(descriptor)
     }
 
     @Suppress("DEPRECATION")
@@ -363,6 +534,7 @@ class CastService : Service() {
     }
 
     private fun sendPacket(kind: Int, flags: Int, timestampUs: Long, payload: ByteArray): Boolean {
+        if (!connectionReady) return false
         val ws = socket ?: return false
         val queuedBytes = ws.queueSize()
         // Low-latency mode favors fresh frames over buffered frames.
@@ -438,7 +610,11 @@ class CastService : Service() {
                             buf.get(bytes)
                             if (bytes.isNotEmpty()) headers.write(bytes)
                         }
-                        if (headers.size() > 0) sendPacket(3, 0, 0L, headers.toByteArray())
+                        if (headers.size() > 0) {
+                            val headerBytes = headers.toByteArray()
+                            codecHeaderCache = headerBytes
+                            sendPacket(3, 0, 0L, headerBytes)
+                        }
                     }
                     else -> if (index >= 0) {
                         val buffer = codec.getOutputBuffer(index)
@@ -509,6 +685,14 @@ class CastService : Service() {
     }
 
     override fun onDestroy() {
+        shuttingDown = true
+        connectionReady = false
+        captureLaunch = null
+        endpointUrl = ""
+        try { cpuLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        cpuLock = null
+        wifiLock = null
         streaming = false
         rotationPollActive = false
         handler.removeCallbacks(rotationPoll)

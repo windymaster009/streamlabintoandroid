@@ -11,6 +11,28 @@ const interfaces = document.getElementById('interface');
 const empty = document.getElementById('empty');
 const notice = document.getElementById('notice');
 const canvas = document.getElementById('videoCanvas');
+const cropSlider = document.getElementById('cropSlider');
+const cropValue = document.getElementById('cropValue');
+function applyCrop(percent) {
+  const safe = Math.min(8, Math.max(0, Number(percent) || 0));
+  cropSlider.value = String(safe);
+  cropValue.textContent = safe + '%';
+  if (captureOnly) {
+    // A uniform scale removes bars without distorting characters. The slight
+    // crop also affects top and bottom, so users can return to 0% instantly.
+    const scale = 1 / (1 - safe / 50);
+    canvas.style.transform = 'scale(' + scale.toFixed(4) + ')';
+  }
+}
+if (!captureOnly) {
+  cropSlider.addEventListener('input', () => {
+    const percent = Number(cropSlider.value);
+    applyCrop(percent);
+    window.windycast.setCrop(percent).catch(console.error);
+  });
+}
+window.windycast.onCrop(applyCrop);
+window.windycast.getCrop().then(applyCrop).catch(console.error);
 const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 let decoder = null;
 let codecConfig = null;
@@ -248,6 +270,10 @@ function openViewer() {
           // frame reaches WebCodecs.
           if (Number.isFinite(msg.width) && Number.isFinite(msg.height)) {
             document.getElementById('resolution').textContent = msg.width + '×' + msg.height;
+          }
+          if (Number.isFinite(msg.fps)) {
+            document.getElementById('encoderMode').textContent =
+              msg.fps + ' FPS ' + (msg.hardware === true ? 'HW' : msg.hardware === false ? 'SW' : '');
           }
           if (decoder) { decoder.close(); decoder = null; }
           codecConfig = null;

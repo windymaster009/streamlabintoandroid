@@ -12,6 +12,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -69,6 +70,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::status.isInitialized) {
+            val reason = getSharedPreferences("windycast", MODE_PRIVATE)
+                .getString("lastStopReason", null)
+            if (!reason.isNullOrBlank()) status.text = reason
+        }
     }
 
     private fun setPairing(code: String) {
@@ -168,14 +178,15 @@ class MainActivity : ComponentActivity() {
             "Balanced — 720p / 30 FPS (2.5 Mbps)",
             "High Quality — 1080p / 60 FPS (8 Mbps)",
             "Ultra — Native up to 4K / 30 FPS (12 Mbps)",
-            "Low Latency — 720p / 60 FPS (3 Mbps)"
+            "Low Latency — 720p / 60 FPS (3 Mbps)",
+            "Ultra 60 FPS — Native up to 4K / 60 FPS (adaptive)"
         )
         quality.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, options)
         quality.setBackgroundColor(Color.parseColor("#1D2C43"))
         // Responsiveness is the default. Players can change to quality modes.
         quality.setSelection(4)
         root.addView(quality, LinearLayout.LayoutParams(-1, dp(55)))
-        root.addView(label("Auto-rotate follows the game. Ultra never upscales a lower-resolution phone screen.", 12f, "#8CA2BF").apply {
+        root.addView(label("Auto-rotate follows the game. Ultra uses native pixels and auto-falls back when the phone cannot encode 4K/60.", 12f, "#8CA2BF").apply {
             setPadding(0, dp(10), 0, 0)
         })
         audioCheck = CheckBox(this).apply {
@@ -185,6 +196,15 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(15), 0, dp(20))
         }
         root.addView(audioCheck)
+        root.addView(actionButton("⚙  Game Mode / background settings", "#29415C") {
+            status.text = "Allow WindyCast unrestricted battery/background activity. In your phone Game Booster, exclude WindyCast from background app cleanup."
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:$packageName")))
+        }.apply {
+            val lp = LinearLayout.LayoutParams(-1, dp(50))
+            lp.bottomMargin = dp(14)
+            layoutParams = lp
+        })
         root.addView(actionButton("▶   Start mirroring", "#42E2C5") { startFlow() },
             LinearLayout.LayoutParams(-1, dp(57)))
         root.addView(actionButton("■   Stop mirroring", "#344259") {
