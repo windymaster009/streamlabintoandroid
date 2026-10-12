@@ -67,6 +67,15 @@ function buildServer() {
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (isViewer) {
         viewers.add(ws);
+        ws.on('message', (payload, binary) => {
+          if (binary) return;
+          try {
+            const message = JSON.parse(payload.toString());
+            if (message.type === 'keyframe' && sender?.readyState === WebSocket.OPEN) {
+              sender.send(JSON.stringify({ type: 'keyframe' }));
+            }
+          } catch (_) {}
+        });
         if (codecHeader) ws.send(codecHeader);
         ws.on('close', () => { viewers.delete(ws); sendStatus(); });
         if (sender?.readyState === WebSocket.OPEN) sender.send(JSON.stringify({ type: 'keyframe' }));

@@ -64,6 +64,12 @@ class CastService : Service() {
     private var videoThread: Thread? = null
     private var audioThread: Thread? = null
     @Volatile private var streaming = false
+    @Volatile private var waitingForVideoKeyframe = false
+    private var lastKeyframeRequestMs = 0L
+    private var videoEncodedThisSecond = 0
+    private var videoSentThisSecond = 0
+    private var videoDroppedThisSecond = 0
+    private var statsClockMs = android.os.SystemClock.elapsedRealtime()
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() { stopSelf() }
     }
@@ -133,13 +139,7 @@ class CastService : Service() {
                 }, "WindyCast-start").start()
             }
             override fun onMessage(ws: WebSocket, text: String) {
-                if (text.contains("keyframe")) {
-                    try {
-                        encoder?.setParameters(android.os.Bundle().apply {
-                            putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
-                        })
-                    } catch (_: Exception) {}
-                }
+                if (text.contains("\"keyframe\"")) requestKeyframe()
             }
             override fun onFailure(ws: WebSocket, error: Throwable, response: Response?) { stopSelf() }
             override fun onClosed(ws: WebSocket, code: Int, reason: String) { stopSelf() }
@@ -162,14 +162,16 @@ class CastService : Service() {
         val width = ((metrics.widthPixels * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
         val height = ((metrics.heightPixels * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
         val fps = if (preset == 1) 30 else 60
-        val bitrate = when (preset) { 1 -> 4_000_000; 2 -> 20_000_000; else -> 12_000_000 }
+        // H.264 on local Wi-Fi: avoid flooding OkHttp / WebCodesc with 12-20 Mbps.
+        val bitrate = when (preset) { 1 -> 2_500_000; 2 -> 8_000_000; else -> 5_000_000 }
 
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT,
                 android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            // Frequent independently decodable frames shorten glitch recovery.
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
         val videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         encoder = videoEncoder
@@ -177,6 +179,11 @@ class CastService : Service() {
         inputSurface = videoEncoder.createInputSurface()
         videoEncoder.start()
         streaming = true
+        waitingForVideoKeyframe = false
+        videoEncodedThisSecond = 0
+        videoSentThisSecond = 0
+        videoDroppedThisSecond = 0
+        statsClockMs = android.os.SystemClock.elapsedRealtime()
         socket?.send(JSONObject()
             .put("type", "start").put("width", width).put("height", height)
             .put("fps", fps).put("bitrate", bitrate).toString())
@@ -190,14 +197,74 @@ class CastService : Service() {
         else socket?.send(JSONObject().put("type", "audio-disabled").toString())
     }
 
-    private fun sendPacket(kind: Int, flags: Int, timestampUs: Long, payload: ByteArray) {
-        val ws = socket ?: return
-        // Avoid accumulating seconds of lag on slow Wi-Fi. Next keyframe will resync.
-        if (ws.queueSize() > 2_000_000L && kind == 1 && flags == 0) return
+    private fun requestKeyframe() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastKeyframeRequestMs < 700) return
+        lastKeyframeRequestMs = now
+        try {
+            encoder?.setParameters(android.os.Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            })
+        } catch (_: Exception) {
+            // Some hardware encoders do not support on-demand sync frames.
+        }
+    }
+
+    private fun sendPacket(kind: Int, flags: Int, timestampUs: Long, payload: ByteArray): Boolean {
+        val ws = socket ?: return false
+        val queuedBytes = ws.queueSize()
+        // Audio is best-effort. Never queue many seconds of stale game audio.
+        if (kind == 2 && queuedBytes > 500_000L) return false
+        if (kind == 1) {
+            val keyFrame = flags and 1 != 0
+            // Never drop an isolated H.264 delta frame and carry on with its
+            // dependent frames: that produces the corruption seen in v0.1.
+            if (queuedBytes > 700_000L) {
+                if (!waitingForVideoKeyframe) {
+                    waitingForVideoKeyframe = true
+                    ws.send(JSONObject().put("type", "resync").toString())
+                }
+                videoDroppedThisSecond++
+                requestKeyframe()
+                return false
+            }
+            if (waitingForVideoKeyframe) {
+                if (!keyFrame || queuedBytes > 180_000L) {
+                    videoDroppedThisSecond++
+                    requestKeyframe()
+                    return false
+                }
+                waitingForVideoKeyframe = false
+            }
+        }
         val bytes = ByteBuffer.allocate(10 + payload.size)
             .put(kind.toByte()).put(flags.toByte()).putLong(timestampUs)
             .put(payload).array()
-        ws.send(bytes.toByteString())
+        val accepted = ws.send(bytes.toByteString())
+        if (!accepted && kind == 1) {
+            waitingForVideoKeyframe = true
+            videoDroppedThisSecond++
+            requestKeyframe()
+        }
+        return accepted
+    }
+
+    private fun reportVideoStats() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - statsClockMs < 1000L) return
+        val elapsed = (now - statsClockMs).coerceAtLeast(1L)
+        val ws = socket
+        ws?.send(JSONObject()
+            .put("type", "stats")
+            .put("encodedFps", (videoEncodedThisSecond * 1000L / elapsed).toInt())
+            .put("sentFps", (videoSentThisSecond * 1000L / elapsed).toInt())
+            .put("dropped", videoDroppedThisSecond)
+            .put("queueKb", (ws.queueSize() / 1024L).toInt())
+            .toString())
+        videoEncodedThisSecond = 0
+        videoSentThisSecond = 0
+        videoDroppedThisSecond = 0
+        statsClockMs = now
     }
 
     private fun drainVideo(codec: MediaCodec) {
@@ -226,8 +293,15 @@ class CastService : Service() {
                             buffer.get(bytes)
                             val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                             val isKey = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                            sendPacket(if (isConfig) 3 else 1,
-                                if (isKey) 1 else 0, info.presentationTimeUs, bytes)
+                            if (isConfig) {
+                                sendPacket(3, 0, info.presentationTimeUs, bytes)
+                            } else {
+                                videoEncodedThisSecond++
+                                if (sendPacket(1, if (isKey) 1 else 0, info.presentationTimeUs, bytes)) {
+                                    videoSentThisSecond++
+                                }
+                                reportVideoStats()
+                            }
                         }
                         codec.releaseOutputBuffer(index, false)
                     }

@@ -2,7 +2,7 @@
 
 **Free, self-hosted Android-to-Windows game mirroring** with QR pairing, a native Android sender (APK), a standalone Electron Windows receiver (EXE), and a single GitHub repository.
 
-> **Current status: v0.1 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
+> **Current status: v0.2 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
 
 ## What it does
 
@@ -10,7 +10,9 @@
 - Capture Android screen via Android MediaProjection, H.264 surface encoder (MediaCodec), and a local-network WebSocket.
 - Decode H.264 in the Windows Electron app with WebCodecs and display in a resizable window.
 - Capture Android game playback audio where the game's Android audio-capture policy permits it (Android 10+), streaming PCM to the Windows output.
-- Presets: **1080p / up to 60 FPS (12 Mbps)**, **720p / up to 30 FPS (4 Mbps)**, and **1080p / up to 60 FPS (20 Mbps)**.
+- Presets: **1080p / up to 60 FPS (5 Mbps)**, **720p / up to 30 FPS (2.5 Mbps)**, and **1080p / up to 60 FPS (8 Mbps)**.
+- v0.2 has congestion-aware H.264 keyframe recovery instead of dropping individual dependent frames, plus a one-second I-frame interval.
+- Built-in diagnostics: **Android encoded FPS**, **sent FPS**, **incoming FPS**, **displayed FPS**, **queue KB**, **dropped frames/s**, and **resync count**.
 - Capturable from **OBS Studio** and **Streamlabs Desktop**, with no watermark or subscription.
 - Both builds produced by GitHub Actions from this same repository.
 
@@ -83,3 +85,15 @@ Debug APK: \`android/app/build/outputs/apk/debug/app-debug.apk\`. Requires Andro
 ## License
 
 MIT. Built independently, without LetsView binaries or proprietary APIs.
+
+## Diagnosing low FPS (v0.2)
+
+The live preview shows separate performance metrics:
+
+- **Android FPS low:** Android capture, phone hardware encoder, screen content or heat/power limit is probably restricting performance. Try **Balanced 720p/30** and test with an animated game, not a static screen.
+- **Android FPS high, Sent FPS low / Drop/s high / Queue KB high:** sender and network throughput can't keep up. Try 5 GHz Wi-Fi, move closer to router, and use Ethernet on the Windows PC.
+- **Sent FPS high, Incoming FPS low:** receiver transport or desktop main process is backing up.
+- **Incoming FPS high, Displayed FPS low:** Windows WebCodecs decode/render is the bottleneck. Test graphics drivers and compare fullscreen/windowed output.
+- **Many Resyncs:** H.264 decoder or transport is losing synchronization. Save a screenshot of all metrics and open an issue.
+
+**Use a fresh QR after showing screenshots publicly**: it contains the LAN pairing secret.

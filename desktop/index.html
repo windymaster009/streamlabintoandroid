@@ -26,9 +26,15 @@
         </div>
       </div>
       <div class="metrics">
-        <span><span class="metric-label">FPS</span> <strong id="fps">—</strong></span>
+        <span title="Frames encoded by Android each second"><span class="metric-label">Android FPS</span> <strong id="encodedFps">—</strong></span>
+        <span title="Frames sent by Android each second"><span class="metric-label">Sent FPS</span> <strong id="sentFps">—</strong></span>
+        <span title="Video frames received by PC each second"><span class="metric-label">Incoming FPS</span> <strong id="incomingFps">—</strong></span>
+        <span title="Video frames shown by the PC each second"><span class="metric-label">Displayed FPS</span> <strong id="fps">—</strong></span>
         <span><span class="metric-label">Video</span> <strong id="resolution">—</strong></span>
         <span><span class="metric-label">Audio</span> <strong id="audioStatus">Waiting</strong></span>
+        <span title="Android queued send data"><span class="metric-label">Queue KB</span> <strong id="queueKb">—</strong></span>
+        <span title="Frames skipped under congestion"><span class="metric-label">Drop/s</span> <strong id="dropCount">0</strong></span>
+        <span title="Number of decoder resynchronizations"><span class="metric-label">Resync</span> <strong id="resyncs">0</strong></span>
         <span class="hint">Capture this window in OBS / Streamlabs</span>
       </div>
     </section>

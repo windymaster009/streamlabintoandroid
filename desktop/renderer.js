@@ -12,6 +12,56 @@ let fpsCount = 0;
 let fpsStarted = performance.now();
 let active = false;
 let lastWidth = 0, lastHeight = 0;
+let viewerSocket = null;
+let waitingForVideoKeyframe = true;
+let codecName = 'avc1.42E02A';
+let incomingFrames = 0;
+let displayedFrames = 0;
+let lastKeyframeRequestAt = 0;
+let recoveryCount = 0;
+
+// Incoming, encoded and rendered FPS are separate: this tells us whether the
+// Android encoder, network or Windows decoder is behind.
+setInterval(() => {
+  document.getElementById('fps').textContent = displayedFrames;
+  document.getElementById('incomingFps').textContent = incomingFrames;
+  incomingFrames = 0;
+  displayedFrames = 0;
+}, 1000);
+
+function requestKeyframe() {
+  if (!viewerSocket || viewerSocket.readyState !== WebSocket.OPEN) return;
+  if (performance.now() - lastKeyframeRequestAt < 700) return;
+  lastKeyframeRequestAt = performance.now();
+  viewerSocket.send(JSON.stringify({ type: 'keyframe' }));
+}
+
+function resynchronizeVideo(reason = '') {
+  waitingForVideoKeyframe = true;
+  recoveryCount++;
+  document.getElementById('resyncs').textContent = String(recoveryCount);
+  if (decoder) {
+    try { decoder.close(); } catch (_) {}
+    decoder = null;
+  }
+  requestKeyframe();
+  if (reason) notice.textContent = reason;
+}
+
+function detectCodec(header) {
+  // Android H.264 csd-0 contains Annex-B SPS (NAL unit type 7).
+  // WebCodecs must be configured for the encoder's actual profile and level.
+  for (let i = 0; i < header.length - 8; i++) {
+    let n = -1;
+    if (header[i] === 0 && header[i + 1] === 0 && header[i + 2] === 1) n = i + 3;
+    if (header[i] === 0 && header[i + 1] === 0 && header[i + 2] === 0 && header[i + 3] === 1) n = i + 4;
+    if (n >= 0 && (header[n] & 31) === 7 && n + 3 < header.length) {
+      return 'avc1.' + Array.from(header.slice(n + 1, n + 4))
+        .map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+    }
+  }
+  return 'avc1.42E02A';
+}
 
 async function renderCode(selected) {
   const info = await window.windycast.info();
@@ -42,6 +92,10 @@ function updateStatus(connected) {
     document.getElementById('resolution').textContent = '—';
     if (decoder) { try { decoder.close(); } catch (_) {} decoder = null; }
     codecConfig = null;
+    waitingForVideoKeyframe = true;
+    document.getElementById('encodedFps').textContent = '—';
+    document.getElementById('incomingFps').textContent = '—';
+    document.getElementById('queueKb').textContent = '—';
     if (audioNode) { audioNode.port.postMessage({ reset: true }); }
   }
 }
@@ -62,18 +116,16 @@ function initDecoder() {
       document.getElementById('resolution').textContent = lastWidth + '×' + lastHeight;
       empty.style.display = 'none';
       active = true;
-      fpsCount++;
+      displayedFrames++;
       frame.close();
-      const now = performance.now();
-      if (now - fpsStarted >= 1000) {
-        document.getElementById('fps').textContent = Math.round(fpsCount * 1000 / (now - fpsStarted));
-        fpsStarted = now;
-        fpsCount = 0;
-      }
     },
     error: (e) => { notice.textContent = 'Video decoder: ' + e.message; }
   });
-  decoder.configure({ codec: 'avc1.42E02A', optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+  try {
+    decoder.configure({ codec: codecName, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+  } catch (error) {
+    notice.textContent = 'Unsupported H.264 format: ' + codecName + ' (' + error.message + ')';
+  }
 }
 async function prepareAudio() {
   if (audioContext) return;
@@ -89,25 +141,50 @@ async function prepareAudio() {
   }
 }
 function handleVideo(bytes) {
-  if (!decoder || decoder.state === 'closed') initDecoder();
+  incomingFrames++;
+  const isKeyframe = (bytes[1] & 1) !== 0;
+  if (waitingForVideoKeyframe && !isKeyframe) {
+    requestKeyframe();
+    return;
+  }
+  if (!decoder || decoder.state !== 'configured') initDecoder();
   if (!decoder || decoder.state !== 'configured') return;
-  const flag = bytes[1] & 1;
+  if (decoder.decodeQueueSize > 10) {
+    // Do not discard individual H.264 P-frames. Their dependent frames would
+    // decode as corrupted mosaics until the next clean IDR frame.
+    resynchronizeVideo('Decoder fell behind; requesting a clean keyframe…');
+    return;
+  }
   const timestamp = Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigInt64(2, false));
   let payload = bytes.subarray(10);
-  if (flag && codecConfig && codecConfig.length > 0) {
-    const merged = new Uint8Array(codecConfig.length + payload.length);
-    merged.set(codecConfig); merged.set(payload, codecConfig.length); payload = merged;
+  if (isKeyframe && codecConfig && codecConfig.length) {
+    const completeKeyframe = new Uint8Array(codecConfig.length + payload.length);
+    completeKeyframe.set(codecConfig);
+    completeKeyframe.set(payload, codecConfig.length);
+    payload = completeKeyframe;
   }
   try {
-    if (decoder.decodeQueueSize > 5 && !flag) return;
-    decoder.decode(new EncodedVideoChunk({ type: flag ? 'key' : 'delta', timestamp, data: payload }));
-  } catch (e) { notice.textContent = 'Decode: ' + e.message; }
+    decoder.decode(new EncodedVideoChunk({ type: isKeyframe ? 'key' : 'delta', timestamp, data: payload }));
+    if (isKeyframe) {
+      waitingForVideoKeyframe = false;
+      notice.textContent = '';
+    }
+  } catch (error) {
+    resynchronizeVideo('Video decoder: ' + error.message);
+  }
 }
 async function handlePacket(event) {
   const bytes = new Uint8Array(event.data);
   if (bytes.byteLength < 10) return;
   if (bytes[0] === 3) {
     codecConfig = bytes.slice(10);
+    const detected = detectCodec(codecConfig);
+    if (detected !== codecName) {
+      codecName = detected;
+      if (decoder) { try { decoder.close(); } catch (_) {} decoder = null; }
+      waitingForVideoKeyframe = true;
+      requestKeyframe();
+    }
   } else if (bytes[0] === 1) {
     handleVideo(bytes);
   } else if (bytes[0] === 2) {
@@ -123,6 +200,7 @@ async function handlePacket(event) {
 }
 function openViewer() {
   const socket = new WebSocket('ws://127.0.0.1:47839/viewer');
+  viewerSocket = socket;
   socket.binaryType = 'arraybuffer';
   socket.onopen = () => { notice.textContent = ''; };
   socket.onmessage = (event) => {
@@ -131,10 +209,20 @@ function openViewer() {
         const msg = JSON.parse(event.data);
         if (msg.type === 'status') updateStatus(msg.connected);
         if (msg.type === 'stopped') updateStatus(false);
+        if (msg.type === 'resync') resynchronizeVideo('Recovering from network congestion…');
+        if (msg.type === 'stats') {
+          document.getElementById('encodedFps').textContent = String(msg.encodedFps ?? '—');
+          document.getElementById('sentFps').textContent = String(msg.sentFps ?? '—');
+          document.getElementById('queueKb').textContent = String(msg.queueKb ?? '—');
+          document.getElementById('dropCount').textContent = String(msg.dropped ?? 0);
+        }
         if (msg.type === 'start') {
           if (decoder) { decoder.close(); decoder = null; }
           codecConfig = null;
-          fpsCount = 0; fpsStarted = performance.now();
+          codecName = 'avc1.42E02A';
+          waitingForVideoKeyframe = true;
+          recoveryCount = 0;
+          document.getElementById('resyncs').textContent = '0';
           notice.textContent = '';
         }
       } catch (_) {}
@@ -143,6 +231,7 @@ function openViewer() {
     }
   };
   socket.onclose = () => {
+    viewerSocket = null;
     updateStatus(false);
     notice.textContent = 'Receiver reconnecting…';
     setTimeout(openViewer, 1500);

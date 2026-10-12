@@ -163,7 +163,7 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(30), 0, dp(10))
         })
         quality = Spinner(this)
-        val options = arrayOf("Gaming — 1080p / 60 FPS", "Balanced — 720p / 30 FPS", "High Quality — 1080p / 60 FPS")
+        val options = arrayOf("Gaming — 1080p / 60 FPS (5 Mbps)", "Balanced — 720p / 30 FPS (2.5 Mbps)", "High Quality — 1080p / 60 FPS (8 Mbps)")
         quality.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, options)
         quality.setBackgroundColor(Color.parseColor("#1D2C43"))
         root.addView(quality, LinearLayout.LayoutParams(-1, dp(55)))
