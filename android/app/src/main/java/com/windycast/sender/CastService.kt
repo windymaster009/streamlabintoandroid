@@ -59,7 +59,7 @@ class CastService : Service() {
     private val client = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build()
     private var socket: WebSocket? = null
     private var projection: MediaProjection? = null
-    private var encoder: MediaCodec? = null
+    @Volatile private var encoder: MediaCodec? = null
     private var display: VirtualDisplay? = null
     private var inputSurface: Surface? = null
     private var recorder: AudioRecord? = null
