@@ -1,3 +1,11 @@
+const captureOnly = new URLSearchParams(location.search).get('mode') === 'capture';
+if (captureOnly) {
+  document.body.classList.add('capture-only');
+  document.title = 'WindyCast Game View - Streamlabs Capture';
+  document.querySelector('#empty h2').textContent = 'Waiting for Android stream';
+  document.querySelector('#empty p').textContent = 'Connect your phone in the main WindyCast window.';
+}
+let gameViewOpen = false;
 const qr = document.getElementById('qr');
 const interfaces = document.getElementById('interface');
 const empty = document.getElementById('empty');
@@ -23,7 +31,8 @@ let recoveryCount = 0;
 // Incoming, encoded and rendered FPS are separate: this tells us whether the
 // Android encoder, network or Windows decoder is behind.
 setInterval(() => {
-  document.getElementById('fps').textContent = displayedFrames;
+  if (captureOnly) window.windycast.reportGameViewFps(displayedFrames);
+  if (!gameViewOpen || captureOnly) document.getElementById('fps').textContent = displayedFrames;
   document.getElementById('incomingFps').textContent = incomingFrames;
   incomingFrames = 0;
   displayedFrames = 0;
@@ -186,8 +195,12 @@ async function handlePacket(event) {
       requestKeyframe();
     }
   } else if (bytes[0] === 1) {
-    handleVideo(bytes);
+    // Only decode in Game View when it is open; keep the dashboard receiving
+    // diagnostics and playing audio, rather than decoding the stream twice.
+    if (captureOnly || !gameViewOpen) handleVideo(bytes);
   } else if (bytes[0] === 2) {
+    // Audio lives in the main dashboard only to avoid doubling game sound.
+    if (captureOnly) return;
     if (!audioContext) await prepareAudio();
     if (!audioNode) return;
     const data = bytes.subarray(10);
@@ -237,6 +250,35 @@ function openViewer() {
     setTimeout(openViewer, 1500);
   };
 }
+document.getElementById('captureBtn').addEventListener('click', async () => {
+  if (captureOnly) return;
+  try {
+    await window.windycast.openGameView();
+  } catch (error) {
+    notice.textContent = 'Cannot open Game View: ' + error.message;
+  }
+});
+window.windycast.onGameViewStatus((open) => {
+  if (captureOnly) return;
+  gameViewOpen = open;
+  if (open) {
+    if (decoder) { try { decoder.close(); } catch (_) {} decoder = null; }
+    empty.style.display = 'flex';
+    document.querySelector('#empty h2').textContent = 'Game View active';
+    document.querySelector('#empty p').textContent = 'Use the separate WindyCast Game View window in Streamlabs. Video decoding is paused here to save resources.';
+    document.getElementById('captureBtn').textContent = '▣ Focus Game View';
+  } else {
+    waitingForVideoKeyframe = true;
+    if (decoder) { try { decoder.close(); } catch (_) {} decoder = null; }
+    document.querySelector('#empty h2').textContent = 'Ready to cast';
+    document.querySelector('#empty p').textContent = 'Scan the QR code with WindyCast on Android, then allow screen sharing.';
+    document.getElementById('captureBtn').textContent = '▣ Open Game View';
+    requestKeyframe();
+  }
+});
+window.windycast.onGameViewFps((fps) => {
+  if (!captureOnly && gameViewOpen) document.getElementById('fps').textContent = fps;
+});
 interfaces.addEventListener('change', async () => displayQr(await window.windycast.info()));
 document.getElementById('rotateBtn').addEventListener('click', async () => {
   const current = interfaces.value;

@@ -22,3 +22,15 @@
 .primary{width:100%;margin-top:25px;background:#40dac4;color:#082329;font-weight:700;border:0;border-radius:9px;padding:12px}.primary:hover{background:#72f4e1}
 .small-note{font-size:11px;line-height:1.5;color:#7388a9;margin-top:13px}footer{padding:13px 33px;color:#71829f;font-size:12px;border-top:1px solid #202a3d;display:flex;justify-content:space-between}#notice{color:#ffa17e}
 @media(max-width:950px){.layout{grid-template-columns:1fr}.pair-panel{max-width:none}.qr-frame{margin:20px auto}.screen{min-height:370px}}
+
+/* Streamlabs / OBS: a standalone, opaque, resizable capture target. */
+.viewer-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.primary.mini-button{width:auto;margin:0;padding:10px 14px;white-space:nowrap}
+body.capture-only,body.capture-only .shell{margin:0;padding:0;min-height:100vh;height:100vh;background:#000;overflow:hidden}
+body.capture-only .topbar,body.capture-only .panel-heading,body.capture-only .pair-panel,body.capture-only .metrics,body.capture-only footer{display:none!important}
+body.capture-only .layout{padding:0;margin:0;display:block;width:100vw;height:100vh}
+body.capture-only .viewer-panel{border:0;border-radius:0;padding:0;margin:0;height:100vh;width:100vw;display:flex}
+body.capture-only .screen{width:100%;height:100%;min-height:0;flex:1;border:0;border-radius:0;background:#000}
+body.capture-only .placeholder{max-width:460px;color:#dbe6fa}
+body.capture-only .placeholder p{max-width:360px}
+@media(max-width:950px){.viewer-actions{gap:6px}.primary.mini-button{font-size:12px;padding:10px}}

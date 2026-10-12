@@ -2,7 +2,7 @@
 
 **Free, self-hosted Android-to-Windows game mirroring** with QR pairing, a native Android sender (APK), a standalone Electron Windows receiver (EXE), and a single GitHub repository.
 
-> **Current status: v0.2 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
+> **Current status: v0.3 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
 
 ## What it does
 
@@ -13,7 +13,8 @@
 - Presets: **1080p / up to 60 FPS (5 Mbps)**, **720p / up to 30 FPS (2.5 Mbps)**, and **1080p / up to 60 FPS (8 Mbps)**.
 - v0.2 has congestion-aware H.264 keyframe recovery instead of dropping individual dependent frames, plus a one-second I-frame interval.
 - Built-in diagnostics: **Android encoded FPS**, **sent FPS**, **incoming FPS**, **displayed FPS**, **queue KB**, **dropped frames/s**, and **resync count**.
-- Capturable from **OBS Studio** and **Streamlabs Desktop**, with no watermark or subscription.
+- **Open Game View** creates a dedicated, resizable, opaque Windows capture window with only the phone video and no QR/settings. Capture the **WindyCast Game View - Streamlabs Capture** window in OBS Studio or Streamlabs Desktop; no official integration is required.
+- The dashboard decodes no video while Game View is open, helping prevent double video-decode load; the dashboard continues to play the phone's captured game audio.
 - Both builds produced by GitHub Actions from this same repository.
 
 ## Download the builds
@@ -32,8 +33,10 @@ These are unsigned development builds. Windows SmartScreen may warn about a down
 3. Launch WindyCast Android and tap **Scan PC QR code**.
 4. Choose video quality and optionally enable game audio.
 5. Tap **Start mirroring** and approve Android's system screen-capture prompt.
-6. On Windows, use OBS/Streamlabs **Window Capture** to add WindyCast. Capture desktop/app audio too. If Window Capture is black, try Display Capture.
-7. Stop in the Android app or from the foreground notification.
+6. On Windows, click **Open Game View**, then in OBS/Streamlabs add a **Window Capture** source and select **WindyCast Game View - Streamlabs Capture**. Keep the Game View window open and not minimized.
+7. Add your PC's **Desktop Audio** (or supported application audio capture) in Streamlabs to capture sound played by the WindyCast dashboard. Mute duplicates if monitoring/desktop audio doubles playback.
+8. If WindyCast is missing from Streamlabs' Window list, confirm the Game View window appears under Alt+Tab, unminimize it, reopen Window Capture settings and try **Windows 10 (1903 and up)**, then **BitBlt**. Try running both applications at the same Windows privilege level. If Window Capture remains unavailable, use **Display Capture** as a fallback.
+9. Stop in the Android app or from the foreground notification.
 
 The Windows app listens on **TCP 47839** on the local network. Pairing tokens are random and regenerated with **Generate new pairing QR**.
 
@@ -47,7 +50,7 @@ desktop/
   main.cjs          # Electron window, pairing tokens, local WebSocket relay
   renderer.js       # WebCodecs H.264 decode, canvas rendering and audio
   audio-worklet.js  # Game audio playback
-  index.html        # Windows interface
+  index.html        # Windows dashboard and separate capture-only view
 .github/workflows/build.yml
 docs/protocol.md
 \`\`\`
@@ -97,3 +100,9 @@ The live preview shows separate performance metrics:
 - **Many Resyncs:** H.264 decoder or transport is losing synchronization. Save a screenshot of all metrics and open an issue.
 
 **Use a fresh QR after showing screenshots publicly**: it contains the LAN pairing secret.
+
+## v0.3 Streamlabs / OBS capture window
+
+**Open Game View** on the main Windows dashboard creates a separate, normal Windows application window entitled `WindyCast Game View - Streamlabs Capture`. It contains only a black background and the Android video, ideal for Window Capture and resizing. The window is **not** a proprietary Streamlabs plugin, and cannot force Streamlabs to enumerate it if Windows or Streamlabs filters it. Capture Method changes and Display Capture are supported fallback options. Keep this window visible (not minimized) during capture.
+
+When the dedicated Game View is open, the dashboard pauses H.264 decoding, while continuing to receive statistics and play phone audio; the Game View itself plays **no audio** to prevent duplicate sounds. If you use Streamlabs, ensure Desktop Audio is configured correctly. Since this is still an early build, capture behavior must be verified on a real Windows system.

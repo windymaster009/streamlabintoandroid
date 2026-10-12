@@ -8,6 +8,7 @@ const QRCode = require('qrcode');
 
 const PORT = 47839;
 let win;
+let gameView = null;
 let token = crypto.randomBytes(24).toString('hex');
 let sender = null;
 let codecHeader = null;
@@ -15,6 +16,8 @@ const viewers = new Set();
 let server, wss;
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// Keep the receiver and its capture window rendering in the background.
+app.setAppUserModelId('com.windycast.desktop');
 
 function localAddresses() {
   const items = [];
@@ -127,9 +130,58 @@ async function receiverInfo() {
   }));
   return { port: PORT, addresses: items, connected: sender?.readyState === WebSocket.OPEN };
 }
+function openGameView() {
+  if (gameView && !gameView.isDestroyed()) {
+    if (gameView.isMinimized()) gameView.restore();
+    gameView.show();
+    gameView.focus();
+    return;
+  }
+  const view = new BrowserWindow({
+    title: 'WindyCast Game View - Streamlabs Capture',
+    width: 1280,
+    height: 760,
+    minWidth: 320,
+    minHeight: 240,
+    backgroundColor: '#000000',
+    show: true,
+    frame: true,
+    transparent: false,
+    skipTaskbar: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false
+    }
+  });
+  gameView = view;
+  view.removeMenu();
+  view.webContents.on('page-title-updated', (event) => event.preventDefault());
+  view.loadFile(path.join(__dirname, 'index.html'), { query: { mode: 'capture' } });
+  if (win && !win.isDestroyed()) win.webContents.send('receiver:game-view-status', true);
+  view.on('closed', () => {
+    if (gameView === view) gameView = null;
+    if (win && !win.isDestroyed()) win.webContents.send('receiver:game-view-status', false);
+  });
+}
+
 app.whenReady().then(() => {
   buildServer();
+  ipcMain.on('receiver:game-view:fps', (event, fps) => {
+    if (gameView && !gameView.isDestroyed() && event.sender === gameView.webContents &&
+        Number.isInteger(fps) && fps >= 0 && fps <= 240 && win && !win.isDestroyed()) {
+      win.webContents.send('receiver:game-view:fps', fps);
+    }
+  });
   ipcMain.handle('receiver:info', receiverInfo);
+  ipcMain.handle('receiver:game-view:open', (event) => {
+    if (!win || event.sender !== win.webContents) return false;
+    openGameView();
+    return true;
+  });
   ipcMain.handle('receiver:rotate', () => {
     token = crypto.randomBytes(24).toString('hex');
     stopSender();
@@ -142,7 +194,8 @@ app.whenReady().then(() => {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      backgroundThrottling: false
     }
   });
   win.removeMenu();
