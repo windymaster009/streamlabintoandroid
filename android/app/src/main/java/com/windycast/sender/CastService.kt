@@ -158,7 +158,7 @@ class CastService : Service() {
         val hasAudioPermission = ContextCompat.checkSelfPermission(
             this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val withAudio = intent.getBooleanExtra(EXTRA_AUDIO, false) && hasAudioPermission
-        val preset = intent.getIntExtra(EXTRA_PROFILE, 0).coerceIn(0, 3)
+        val preset = intent.getIntExtra(EXTRA_PROFILE, 0).coerceIn(0, 4)
         val request = Request.Builder()
             .url("ws://" + address + ":" + port + "/stream?token=" + token)
             .build()
@@ -205,7 +205,7 @@ class CastService : Service() {
      */
     private fun createVideoEncoder(sourceWidth: Int, sourceHeight: Int): EncoderChoice {
         val targetEdge = when (presetChoice) {
-            1 -> 1280
+            1, 4 -> 1280
             3 -> 3840
             else -> 1920
         }
@@ -220,6 +220,7 @@ class CastService : Service() {
                     longEdge > 2560 -> 12_000_000
                     longEdge > 1920 -> 8_000_000
                     longEdge > 1280 -> if (presetChoice == 2) 8_000_000 else 5_000_000
+                    presetChoice == 4 -> 3_000_000
                     else -> 2_500_000
                 }
                 var candidate: MediaCodec? = null
@@ -231,6 +232,9 @@ class CastService : Service() {
                         setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                         setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                         setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                        // A priority of 0 requests realtime encoding on encoders
+                        // that support Android's codec priority hint.
+                        setInteger(MediaFormat.KEY_PRIORITY, 0)
                     }
                     candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                     val surface = candidate.createInputSurface()
@@ -361,13 +365,17 @@ class CastService : Service() {
     private fun sendPacket(kind: Int, flags: Int, timestampUs: Long, payload: ByteArray): Boolean {
         val ws = socket ?: return false
         val queuedBytes = ws.queueSize()
+        // Low-latency mode favors fresh frames over buffered frames.
+        // Tune the other profiles more conservatively for larger IDR sizes.
+        val videoCongestionLimit = if (presetChoice == 4) 350_000L else 700_000L
+        val keyframeRecoveryLimit = if (presetChoice == 4) 130_000L else 180_000L
         // Audio is best-effort. Never queue many seconds of stale game audio.
         if (kind == 2 && queuedBytes > 500_000L) return false
         if (kind == 1) {
             val keyFrame = flags and 1 != 0
             // Never drop an isolated H.264 delta frame and carry on with its
             // dependent frames: that produces the corruption seen in v0.1.
-            if (queuedBytes > 700_000L) {
+            if (queuedBytes > videoCongestionLimit) {
                 if (!waitingForVideoKeyframe) {
                     waitingForVideoKeyframe = true
                     ws.send(JSONObject().put("type", "resync").toString())
@@ -377,7 +385,7 @@ class CastService : Service() {
                 return false
             }
             if (waitingForVideoKeyframe) {
-                if (!keyFrame || queuedBytes > 180_000L) {
+                if (!keyFrame || queuedBytes > keyframeRecoveryLimit) {
                     videoDroppedThisSecond++
                     requestKeyframe()
                     return false

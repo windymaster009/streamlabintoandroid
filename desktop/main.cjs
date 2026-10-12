@@ -71,6 +71,9 @@ function buildServer() {
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (isViewer) {
+        ws.role = url.searchParams.get('role') === 'game' ? 'game' : 'dashboard';
+        ws.awaitingKeyframe = false;
+        ws._socket?.setNoDelay(true);
         viewers.add(ws);
         ws.on('message', (payload, binary) => {
           if (binary) return;
@@ -90,6 +93,7 @@ function buildServer() {
       }
       if (sender) stopSender();
       sender = ws;
+      ws._socket?.setNoDelay(true);
       codecHeader = null;
       latestVideoStart = null;
       ws.on('message', (payload, binary) => {
@@ -112,11 +116,41 @@ function buildServer() {
           return;
         }
         if (payload.length < 10) return;
-        if (payload[0] === 3) codecHeader = Buffer.from(payload);
+        const packetType = payload[0];
+        const isVideo = packetType === 1 || packetType === 3;
+        const hasGameView = !!gameView && !gameView.isDestroyed();
+        if (packetType === 3) codecHeader = Buffer.from(payload);
         for (const viewer of viewers) {
-          if (viewer.readyState === WebSocket.OPEN && viewer.bufferedAmount < 2 * 1024 * 1024) {
-            viewer.send(payload, { binary: true });
+          if (viewer.readyState !== WebSocket.OPEN) continue;
+          // There must only be ONE video consumer. A separate Electron
+          // capture window should not double the H.264 traffic and work.
+          if (isVideo) {
+            if (hasGameView && viewer.role !== 'game') continue;
+            if (!hasGameView && viewer.role === 'game') continue;
+            if (packetType === 1) {
+              if (viewer.bufferedAmount > 320 * 1024) {
+                if (!viewer.awaitingKeyframe) {
+                  viewer.awaitingKeyframe = true;
+                  viewer.send(JSON.stringify({ type: 'resync' }));
+                  if (sender?.readyState === WebSocket.OPEN) {
+                    sender.send(JSON.stringify({ type: 'keyframe' }));
+                  }
+                }
+                continue;
+              }
+              if (viewer.awaitingKeyframe) {
+                // H.264 P-frames cannot recover after dropping one. Wait for
+                // an independent IDR when the local queue has drained.
+                if ((payload[1] & 1) === 0 || viewer.bufferedAmount > 100 * 1024) continue;
+                viewer.awaitingKeyframe = false;
+                if (codecHeader) viewer.send(codecHeader);
+              }
+            }
+          } else if (packetType === 2 && viewer.role === 'game') {
+            // Audio playback is owned by dashboard to prevent echoes.
+            continue;
           }
+          viewer.send(payload, { binary: true });
         }
       });
       ws.on('close', () => {

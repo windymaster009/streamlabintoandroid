@@ -46,6 +46,7 @@ function requestKeyframe() {
 }
 
 function resynchronizeVideo(reason = '') {
+  active = false;
   waitingForVideoKeyframe = true;
   recoveryCount++;
   document.getElementById('resyncs').textContent = String(recoveryCount);
@@ -116,17 +117,27 @@ function initDecoder() {
   }
   decoder = new VideoDecoder({
     output: (frame) => {
-      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-        canvas.width = frame.displayWidth;
-        canvas.height = frame.displayHeight;
+      try {
+        const dimensionChanged = canvas.width !== frame.displayWidth ||
+          canvas.height !== frame.displayHeight;
+        if (dimensionChanged) {
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+          lastWidth = frame.displayWidth;
+          lastHeight = frame.displayHeight;
+          // Updating text/layout on every video frame stalls Electron's
+          // renderer; do it only when the phone resolution really changes.
+          document.getElementById('resolution').textContent = lastWidth + '×' + lastHeight;
+        }
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+        if (!active) {
+          empty.style.display = 'none';
+          active = true;
+        }
+        displayedFrames++;
+      } finally {
+        frame.close();
       }
-      ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-      lastWidth = frame.displayWidth; lastHeight = frame.displayHeight;
-      document.getElementById('resolution').textContent = lastWidth + '×' + lastHeight;
-      empty.style.display = 'none';
-      active = true;
-      displayedFrames++;
-      frame.close();
     },
     error: (e) => { notice.textContent = 'Video decoder: ' + e.message; }
   });
@@ -158,7 +169,7 @@ function handleVideo(bytes) {
   }
   if (!decoder || decoder.state !== 'configured') initDecoder();
   if (!decoder || decoder.state !== 'configured') return;
-  if (decoder.decodeQueueSize > 10) {
+  if (decoder.decodeQueueSize > 5) {
     // Do not discard individual H.264 P-frames. Their dependent frames would
     // decode as corrupted mosaics until the next clean IDR frame.
     resynchronizeVideo('Decoder fell behind; requesting a clean keyframe…');
@@ -212,7 +223,8 @@ async function handlePacket(event) {
   }
 }
 function openViewer() {
-  const socket = new WebSocket('ws://127.0.0.1:47839/viewer');
+  const role = captureOnly ? 'game' : 'dashboard';
+  const socket = new WebSocket('ws://127.0.0.1:47839/viewer?role=' + role);
   viewerSocket = socket;
   socket.binaryType = 'arraybuffer';
   socket.onopen = () => { notice.textContent = ''; };
@@ -230,6 +242,7 @@ function openViewer() {
           document.getElementById('dropCount').textContent = String(msg.dropped ?? 0);
         }
         if (msg.type === 'start') {
+          active = false;
           // Rotation restarts the Android encoder, not the audio or connection.
           // Show the new capture dimensions immediately while the first IDR
           // frame reaches WebCodecs.
@@ -299,5 +312,5 @@ document.getElementById('fullBtn').addEventListener('click', () => {
 });
 window.windycast.onStatus((status) => updateStatus(status.connected));
 window.windycast.onError((error) => { notice.textContent = 'Port 47839 unavailable: ' + error; });
-renderCode().catch((error) => { notice.textContent = error.message; });
+if (!captureOnly) renderCode().catch((error) => { notice.textContent = error.message; });
 openViewer();

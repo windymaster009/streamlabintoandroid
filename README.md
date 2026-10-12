@@ -2,7 +2,7 @@
 
 **Free, self-hosted Android-to-Windows game mirroring** with QR pairing, a native Android sender (APK), a standalone Electron Windows receiver (EXE), and a single GitHub repository.
 
-> **Current status: v0.4 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
+> **Current status: v0.5 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
 
 ## What it does
 
@@ -10,7 +10,7 @@
 - Capture Android screen via Android MediaProjection, H.264 surface encoder (MediaCodec), and a local-network WebSocket.
 - Decode H.264 in the Windows Electron app with WebCodecs and display in a resizable window.
 - Capture Android game playback audio where the game's Android audio-capture policy permits it (Android 10+), streaming PCM to the Windows output.
-- Presets: **1080p / up to 60 FPS (5 Mbps)**, **720p / up to 30 FPS (2.5 Mbps)**, **1080p / up to 60 FPS (8 Mbps)**, and **Ultra native up to 4K / up to 30 FPS (12 Mbps)**. Ultra is limited by the real phone display resolution and falls back if the H.264 encoder rejects the requested mode.
+- Presets: **1080p / up to 60 FPS (5 Mbps)**, **720p / up to 30 FPS (2.5 Mbps)**, **1080p / up to 60 FPS (8 Mbps)**, and **Ultra native up to 4K / up to 30 FPS (12 Mbps)**, and a **Low Latency 720p/60 FPS (3 Mbps)** mode (default). Ultra is limited by the real phone display resolution and falls back if the H.264 encoder rejects the requested mode.
 - v0.2 has congestion-aware H.264 keyframe recovery instead of dropping individual dependent frames, plus a one-second I-frame interval.
 - Built-in diagnostics: **Android encoded FPS**, **sent FPS**, **incoming FPS**, **displayed FPS**, **queue KB**, **dropped frames/s**, and **resync count**.
 - **Automatic portrait ↔ landscape changes** resize Android's existing MediaProjection virtual display and recreate the H.264 surface encoder without requiring a new QR connection. Game View adjusts its own window aspect ratio when the stream switches orientation.
@@ -23,7 +23,7 @@
 1. Open **[GitHub Actions](../../actions/workflows/build.yml)**.
 2. Select a successful **Build Android APK and Windows EXE** workflow run.
 3. Under **Artifacts**, download **WindyCast-Android-APK** and **WindyCast-Windows-EXE**.
-4. Unzip each artifact. Install `app-debug.apk` on Android and run `WindyCast-Windows-0.4.0.exe` on Windows. The Windows build is a portable executable; it does not require a separate installer.
+4. Unzip each artifact. Install `app-debug.apk` on Android and run `WindyCast-Windows-0.5.0.exe` on Windows. The Windows build is a portable executable; it does not require a separate installer.
 
 These are unsigned development builds. Windows SmartScreen may warn about a downloaded unsigned EXE; inspect and trust the source before proceeding. To generate a signed production app, configure signing separately.
 
@@ -114,3 +114,29 @@ When the dedicated Game View is open, the dashboard pauses H.264 decoding, while
 - **Ultra** requests native pixels up to a 3840px long edge at 30 FPS/12 Mbps, with fallback to smaller supported encoder configurations. A 1080p/2400p phone doesn't become true 4K just by selecting Ultra. Quality depends on actual hardware, game, Wi-Fi, and encoder support.
 - **Queue KB** measures Android's pending WebSocket bytes, *not bitrate*. Values around 5–10 KB are low and generally good. Use separate Android/Sent/Incoming/Displayed FPS diagnostics to understand lag.
 - This feature is experimental; test both rotating before launch and rotating while already mirroring, preferably with your actual game. If black bars persist, include both phone and desktop screenshots and the current Video resolution from the dashboard.
+
+## v0.5 low-latency + Game View optimizations
+
+For someone playing a game on the phone and watching on Windows, *input-to-display responsiveness* is usually more important than maximum resolution. V0.5 changes:
+
+- Low Latency **720p / 60 FPS / 3 Mbps** is the default Android preset. Use Gaming 1080p60 when quality matters more than responsiveness.
+- Game View and the dashboard no longer receive duplicate H.264 streams. The PC forwards video **only to the active viewing window**; audio remains routed to the dashboard.
+- Windows WebCodecs drops/re-synchronizes after a shorter decoder backlog, rather than buffering up to 10 queued frames.
+- Windows renderer no longer writes resolution DOM/UI attributes 60 times per second, reducing rendering overhead when captured in Streamlabs.
+- Receiver TCP sockets use TCP_NODELAY and drop dependent-frame chains if a viewer is deeply backlogged rather than showing a corrupted, delayed picture.
+
+**The 4K/Ultra preset remains optional and is not recommended for twitch/competitive gaming**. 4K30 consumes substantially more resources, which may add latency. Real-world latency is not yet benchmarked.
+
+### Compare against the previous stable build
+
+[Previous v0.4.0 APK + EXE build](https://github.com/windymaster009/streamlabintoandroid/actions/runs/38298961495)
+
+To compare, record a simultaneous shot of the Android phone and Windows screen while tapping a game button. Check **Android FPS / Sent FPS / Incoming FPS / Displayed FPS / Queue KB**. If Android FPS is 60 but Displayed FPS is under 30, the Windows decoder/capture is still overloaded; lowering bitrate alone may not solve it.
+
+### Streamlabs capture tips
+
+Use `Open Game View`, select the dedicated `WindyCast Game View - Streamlabs Capture` window in Streamlabs, keep that window open and not minimized, and avoid recording both WindyCast windows at once. Streamlabs' streaming encoder and Window Capture can use extra GPU time; try a lower Streamlabs output resolution and hardware encoder if the PC struggles.
+
+### Security
+
+The local transport still uses plaintext WebSocket. Do not expose port 47839 outside a trusted LAN. Treat pairing QR images as secrets and regenerate them if shared publicly.
