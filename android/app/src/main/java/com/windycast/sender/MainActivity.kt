@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -77,7 +78,18 @@ class MainActivity : ComponentActivity() {
         if (::status.isInitialized) {
             val reason = getSharedPreferences("windycast", MODE_PRIVATE)
                 .getString("lastStopReason", null)
-            if (!reason.isNullOrBlank()) status.text = reason
+            if (!reason.isNullOrBlank()) {
+                status.text = reason
+            } else {
+                // A Game Turbo memory cleanup can kill WindyCast's process
+                // outright, preventing callbacks. Persist a diagnostic marker
+                // so we can report that interruption on the next launch.
+                val previouslyCapturing = getSharedPreferences("windycast", MODE_PRIVATE)
+                    .getBoolean("captureExpected", false)
+                if (previouslyCapturing && !CastService.runningInProcess) {
+                    status.text = "WindyCast was closed by Android while mirroring. On Xiaomi: check Game Turbo memory cleanup, lock WindyCast in recent apps, and try launching the game before starting capture."
+                }
+            }
         }
     }
 
@@ -114,7 +126,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchScreenPrompt() {
-        screenPermission.launch(projectionManager.createScreenCaptureIntent())
+        // Android 14+ often defaults to "share one app". That capture may
+        // stop when the user opens a game. WindyCast mirrors the whole phone,
+        // so ask explicitly for the entire display (consent is still required).
+        val consentIntent = if (Build.VERSION.SDK_INT >= 34) {
+            projectionManager.createScreenCaptureIntent(
+                MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            projectionManager.createScreenCaptureIntent()
+        }
+        screenPermission.launch(consentIntent)
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -196,8 +217,15 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(15), 0, dp(20))
         }
         root.addView(audioCheck)
-        root.addView(actionButton("⚙  Game Mode / background settings", "#29415C") {
-            status.text = "Allow WindyCast unrestricted battery/background activity. In your phone Game Booster, exclude WindyCast from background app cleanup."
+        root.addView(label("XIAOMI / HYPEROS GAME TURBO", 12f, "#A1B7D2", true).apply {
+            setPadding(0, dp(18), 0, dp(6))
+        })
+        root.addView(label(
+            "For Xiaomi 14T Pro: Security → Game Turbo → Settings. Disable memory cleaning/background app cleanup where available. Lock WindyCast in Recent Apps and allow unrestricted battery activity. Try starting Game Turbo before mirroring.",
+            12f, "#C8D9EE").apply { setPadding(0, dp(4), 0, dp(8)) })
+        root.addView(actionButton("⚙  WindyCast App Info / Battery", "#29415C") {
+            // This is ONLY Android's app settings, not Xiaomi's Game Turbo.
+            status.text = "App Info: find Battery saver and set No restrictions if available. For Game Turbo, open Xiaomi Security → Game Turbo manually."
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.parse("package:$packageName")))
         }.apply {
@@ -205,9 +233,14 @@ class MainActivity : ComponentActivity() {
             lp.bottomMargin = dp(14)
             layoutParams = lp
         })
+        root.addView(label("For game streaming, WindyCast requests permission to share your entire display, not just one app. Please approve the Android prompt.", 12f, "#91AACA").apply {
+            setPadding(0, 0, 0, dp(12))
+        })
         root.addView(actionButton("▶   Start mirroring", "#42E2C5") { startFlow() },
             LinearLayout.LayoutParams(-1, dp(57)))
         root.addView(actionButton("■   Stop mirroring", "#344259") {
+            getSharedPreferences("windycast", MODE_PRIVATE).edit()
+                .putBoolean("captureExpected", false).remove("lastStopReason").apply()
             stopService(Intent(this, CastService::class.java))
             status.text = "Mirroring stopped."
         }.apply {

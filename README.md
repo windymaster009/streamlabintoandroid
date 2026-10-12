@@ -2,7 +2,7 @@
 
 **Free, self-hosted Android-to-Windows game mirroring** with QR pairing, a native Android sender (APK), a standalone Electron Windows receiver (EXE), and a single GitHub repository.
 
-> **Current status: v0.6 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
+> **Current status: v0.7 experimental implementation.** The screen/video/audio pipeline and pairing UI are implemented, but real-device 1080p/60 FPS reliability is **not yet verified**. Expect to iterate after testing on a physical Android phone and Windows machine. This is not yet at LetsView feature parity.
 
 ## What it does
 
@@ -23,7 +23,7 @@
 1. Open **[GitHub Actions](../../actions/workflows/build.yml)**.
 2. Select a successful **Build Android APK and Windows EXE** workflow run.
 3. Under **Artifacts**, download **WindyCast-Android-APK** and **WindyCast-Windows-EXE**.
-4. Unzip each artifact. Install `app-debug.apk` on Android and run `WindyCast-Windows-0.6.0.exe` on Windows. The Windows build is a portable executable; it does not require a separate installer.
+4. Unzip each artifact. Install `app-debug.apk` on Android and run `WindyCast-Windows-0.7.0.exe` on Windows. The Windows build is a portable executable; it does not require a separate installer.
 
 These are unsigned development builds. Windows SmartScreen may warn about a downloaded unsigned EXE; inspect and trust the source before proceeding. To generate a signed production app, configure signing separately.
 
@@ -155,3 +155,20 @@ The local transport still uses plaintext WebSocket. Do not expose port 47839 out
 Prefer **Low Latency 720p60** or **Gaming 1080p60** during competitive play. Ultra60 is best for a powerful phone with supported hardware, a stable 5/6 GHz WLAN, and an Ethernet-connected Windows receiver. Set **Game View Crop** to 0% to compare before/after appearance. Test Ultra60 against Ultra30 and watch *Android FPS*, *Sent FPS*, *Incoming FPS*, *Displayed FPS*, and *Encoder mode*, not just the chosen quality label.
 
 Game Mode disconnect behavior is highly phone/ROM-specific and must be validated on physical devices. This project does not defeat Android app-specific protected content or screen-capture restrictions.
+
+## v0.7 — full frame + Xiaomi Game Turbo capture handling
+
+- **Safe Game View / no lost skills**: default crop is 0% (was 3%). Electron now uses `object-fit: contain` so no game controls disappear. Existing saved v0.6 crop values are migrated to 0 once. The small, adjustable manual crop remains an opt-in feature; set it to 0 for the full source image. The Game View window follows the video dimensions and aspect ratio. If the *encoded video itself* contains black columns, they cannot be removed without trimming source pixels—this release prefers retaining all HUD controls over hiding intrinsic bars.
+- **Xiaomi 14T Pro / HyperOS**: Android 14+ screen consent now requests **the entire default display** with `MediaProjectionConfig.createConfigForDefaultDisplay()`, not app-window-only sharing. User consent remains required on every new capture. Some OEM firmware can override this request.
+- Renamed misleading `Game Mode / background settings` button to **WindyCast App Info / Battery**. This opens the WindyCast settings page as intended; it is *not* a launcher for Xiaomi Game Turbo. A separate on-screen guide explains Xiaomi's menu.
+- **Real Game Turbo menu**: Xiaomi Security → Game Turbo → Settings. If present, disable background/memory cleaning for WindyCast, lock the app in Recent Apps, and choose Battery saver → No restrictions for WindyCast. Device menus vary with HyperOS version. Try entering the game/activating Game Turbo **before** starting the WindyCast capture if the booster kills running background apps.
+- **Capture termination diagnostics**: when MediaProjection onStop fires, the next launch explains capture permission was revoked. If the streaming service stops unexpectedly it records a diagnostic message; if HyperOS kills the full process, a persisted flag can indicate the prior stream disappeared. A system-revoked screen-capture permission cannot be restarted automatically.
+- v0.6 reconnect, wake locks, single-window video delivery, and Ultra60 still remain.
+
+### Report Game Turbo failures
+
+Please capture the phone's HyperOS version and which event causes the disconnect: switching into the game, tapping **Boost / Clear memory** in Game Turbo, toggling Game Turbo on, or launching its built-in recorder. Then reopen WindyCast and capture the visible stop message. This distinguishes an OS-revoked MediaProjection from a network failure and from a forced process kill. The app cannot bypass vendor capture restrictions.
+
+### About black borders
+
+An exact aspect-ratio window plus `contain` shows all pixels. If the phone's encoder supplies letterboxed content, preserving everything necessarily means tiny black bars can remain. Cropping to hide those bars will also crop some buttons. The crop control is optional and defaults to zero.

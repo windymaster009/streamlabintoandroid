@@ -18,10 +18,10 @@ function applyCrop(percent) {
   cropSlider.value = String(safe);
   cropValue.textContent = safe + '%';
   if (captureOnly) {
-    // A uniform scale removes bars without distorting characters. The slight
-    // crop also affects top and bottom, so users can return to 0% instantly.
-    const scale = 1 / (1 - safe / 50);
-    canvas.style.transform = 'scale(' + scale.toFixed(4) + ')';
+    // Always show 100% of the game by default. A crop is opt-in and
+    // deliberately zooms the image; we never use object-fit:cover.
+    const scale = safe === 0 ? 1 : 1 / (1 - safe / 50);
+    canvas.style.transform = safe === 0 ? 'none' : 'scale(' + scale.toFixed(4) + ')';
   }
 }
 if (!captureOnly) {

@@ -43,4 +43,5 @@ body.capture-only .placeholder p{max-width:360px}
 .crop-heading strong{font-size:13px;color:#40dac4}
 .crop-settings input[type="range"]{width:100%;margin:15px 0 8px;accent-color:#40dac4;cursor:pointer}
 .crop-settings p{font-size:11px;color:#94a8c5;line-height:1.5}
-body.capture-only .screen canvas{object-fit:cover;transform-origin:center center}
+/* Fit the complete encoded frame. 'cover' used to cut off controls. */
+body.capture-only .screen canvas{object-fit:contain;transform-origin:center center}

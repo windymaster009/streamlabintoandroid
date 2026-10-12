@@ -58,6 +58,8 @@ class CastService : Service() {
         const val EXTRA_AUDIO = "audio"
         const val EXTRA_PROFILE = "profile"
         private const val CHANNEL_ID = "windycast_screen"
+        @Volatile var runningInProcess: Boolean = false
+            private set
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -129,8 +131,9 @@ class CastService : Service() {
         override fun onStop() {
             if (!shuttingDown) {
                 getSharedPreferences("windycast", MODE_PRIVATE).edit()
+                    .putBoolean("captureExpected", false)
                     .putString("lastStopReason",
-                        "Android or Game Mode ended screen sharing. Open WindyCast and approve sharing again. Check background activity / battery restrictions.")
+                        "Android ended screen capture (possibly because Game Turbo started its recorder, the phone locked, or the capture was stopped). Reopen WindyCast and approve whole-display sharing.")
                     .apply()
                 stopSelf()
             }
@@ -171,6 +174,8 @@ class CastService : Service() {
     @Suppress("DEPRECATION")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null || intent.action == ACTION_STOP) {
+            getSharedPreferences("windycast", MODE_PRIVATE).edit()
+                .putBoolean("captureExpected", false).remove("lastStopReason").apply()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -179,6 +184,7 @@ class CastService : Service() {
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(42, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else startForeground(42, notification())
+        runningInProcess = true
         if (streaming || socket != null) return START_NOT_STICKY
         val address = intent.getStringExtra(EXTRA_HOST) ?: return START_NOT_STICKY
         val token = intent.getStringExtra(EXTRA_TOKEN) ?: return START_NOT_STICKY
@@ -445,6 +451,8 @@ class CastService : Service() {
         activeWidth = choice.width
         activeHeight = choice.height
         streaming = true
+        getSharedPreferences("windycast", MODE_PRIVATE).edit()
+            .putBoolean("captureExpected", true).remove("lastStopReason").apply()
         waitingForVideoKeyframe = false
         videoEncodedThisSecond = 0
         videoSentThisSecond = 0
@@ -482,6 +490,11 @@ class CastService : Service() {
         rotationExecutor.execute {
             try { resizeEncoder(sourceWidth, sourceHeight) }
             catch (error: Exception) {
+                android.util.Log.e("WindyCast", "Rotation failed", error)
+                getSharedPreferences("windycast", MODE_PRIVATE).edit()
+                    .putString("lastStopReason",
+                        "Game rotation ended capture: " + (error.message ?: "encoder error"))
+                    .apply()
                 socket?.send(JSONObject().put("type", "error")
                     .put("message", "Rotation failed: " + error.message).toString())
                 stopSelf()
@@ -685,6 +698,17 @@ class CastService : Service() {
     }
 
     override fun onDestroy() {
+        runningInProcess = false
+        val preferences = getSharedPreferences("windycast", MODE_PRIVATE)
+        if (preferences.getBoolean("captureExpected", false)) {
+            // A normal app/UI stop clears captureExpected first; reaching here
+            // with it set means the service stopped unexpectedly.
+            if (preferences.getString("lastStopReason", null) == null) {
+                preferences.edit().putString("lastStopReason",
+                    "WindyCast service stopped unexpectedly. HyperOS Game Turbo may be clearing background apps; check Game Turbo settings or device logs.").apply()
+            }
+        }
+        preferences.edit().putBoolean("captureExpected", false).apply()
         shuttingDown = true
         connectionReady = false
         captureLaunch = null

@@ -16,7 +16,7 @@ let codecHeader = null;
 let latestVideoStart = null;
 const viewers = new Set();
 let server, wss;
-let cropPercent = 3;
+let cropPercent = 0;
 let cropSettingsPath = null;
 
 function setCropPercent(percent) {
@@ -24,7 +24,7 @@ function setCropPercent(percent) {
   if (!Number.isFinite(value) || value < 0 || value > 8) return cropPercent;
   cropPercent = value;
   if (cropSettingsPath) {
-    try { fs.writeFileSync(cropSettingsPath, JSON.stringify({ cropPercent }), 'utf8'); }
+    try { fs.writeFileSync(cropSettingsPath, JSON.stringify({ cropSettingsVersion: 2, cropPercent }), 'utf8'); }
     catch (error) { console.warn('Could not save crop preference:', error.message); }
   }
   for (const view of [win, gameView]) {
@@ -267,9 +267,17 @@ app.whenReady().then(() => {
   cropSettingsPath = path.join(app.getPath('userData'), 'capture-settings.json');
   try {
     const stored = JSON.parse(fs.readFileSync(cropSettingsPath, 'utf8'));
-    const restored = Math.round(Number(stored.cropPercent));
-    if (Number.isFinite(restored) && restored >= 0 && restored <= 8) cropPercent = restored;
-  } catch (_) { /* First run: default to 3% for small sidebars. */ }
+    // v0.6 zoomed gameplay by default and cut off game skill buttons.
+    // One-time migration resets that unsafe default even for existing users.
+    // Explicit choices made in v0.7+ are preserved on subsequent launches.
+    if (stored.cropSettingsVersion === 2) {
+      const restored = Math.round(Number(stored.cropPercent));
+      if (Number.isFinite(restored) && restored >= 0 && restored <= 8) cropPercent = restored;
+    } else {
+      fs.writeFileSync(cropSettingsPath,
+        JSON.stringify({ cropSettingsVersion: 2, cropPercent: 0 }), 'utf8');
+    }
+  } catch (_) { /* First launch: show the entire game, no crop. */ }
   buildServer();
   ipcMain.on('receiver:game-view:fps', (event, fps) => {
     if (gameView && !gameView.isDestroyed() && event.sender === gameView.webContents &&
